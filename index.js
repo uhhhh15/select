@@ -2,8 +2,8 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.0]'; 
-    const REPLACED_MARKER = 'data-great-replacer-processed';
+    const SCRIPT_NAME = '[The Great Replacer V2.5]'; // 版本号+1
+    const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
     const DROP_UP_IDS = ['custom_prompt_post_processing', 'model_custom_select'];
@@ -124,7 +124,7 @@
         .gr-search-input:focus {
             background-color: #ffffff !important;
             border-color: #42a5f5 !important;
-            caret-color: #42a5f5;
+            caret-color: #42a5f5; /* 【新增】修改光标颜色 */
         }
         .gr-options-container { padding: 2px 0 4px 0; }
         .gr-option {
@@ -146,7 +146,8 @@
             background-color: #e3f2fd !important; color: #1565c0 !important; font-weight: 600;
         }
         .gr-option.hidden { display: none; }
-       
+
+        /* 【新增】optgroup 标签的样式 */
         .gr-group-label {
             padding: 10px 12px 4px 12px;
             font-size: 12px;
@@ -255,6 +256,7 @@
         
         const isWorldInfoSelect = originalSelect.name === '$' && originalSelect.closest('#world_popup_entries_list');
         
+        // 【核心修改】重构此函数以支持 optgroup
         function populateOptions() {
             optionsContainer.innerHTML = '';
             
@@ -401,6 +403,7 @@
         });
     }
 
+    // 【无变动】停止对 world_popup_entries_list 的监听
     function stopObservingEntriesList() {
         if (entriesListObserver) {
             entriesListObserver.disconnect();
