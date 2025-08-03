@@ -2,8 +2,8 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.1]'; // 版本号
-    const REPLACED_MARKER = 'data-great-replacer-processed-v2';
+    const SCRIPT_NAME = '[The Great Replacer V1.0]'; // 版本号
+    const REPLACED_MARKER = 'data-great-replacer-processed-v1';
 
     // 需要向上弹出的<select>元素的ID列表
     const DROP_UP_IDS = ['custom_prompt_post_processing', 'model_custom_select'];
