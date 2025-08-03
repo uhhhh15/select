@@ -2,8 +2,8 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.0]'; // 版本号
-    const REPLACED_MARKER = 'data-great-replacer-processed-v1';
+    const SCRIPT_NAME = '[The Great Replacer V2.6]'; // 版本号+1
+    const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
     const DROP_UP_IDS = ['custom_prompt_post_processing', 'model_custom_select'];
@@ -438,10 +438,12 @@
 			
 			updateContainerPosition();
 
+			// 1. 定义边界元素ID和安全间距
 			const TOP_BOUNDARY_ID = 'top-settings-holder';
 			const BOTTOM_BOUNDARY_ID = 'send_form';
-			const BOUNDARY_MARGIN = 10; 
+			const BOUNDARY_MARGIN = 10; // 弹窗与边界元素之间的空隙
 
+			// 2. 获取所有需要的位置信息
 			const originalSelectRect = originalSelect.getBoundingClientRect();
 			const topBoundaryEl = window.parent.document.getElementById(TOP_BOUNDARY_ID);
 			const bottomBoundaryEl = window.parent.document.getElementById(BOTTOM_BOUNDARY_ID);
@@ -449,25 +451,26 @@
 			let maxAvailableHeight;
 
 			if (container.classList.contains('drop-up')) {
+				// --- A. 处理向上弹出的情况 ---
 				if (topBoundaryEl) {
 					const topBoundaryRect = topBoundaryEl.getBoundingClientRect();
-					// (修改点) 可用高度 = 下拉框顶部 - 锚点元素【顶部】 - 间距
-					maxAvailableHeight = originalSelectRect.top - topBoundaryRect.top - BOUNDARY_MARGIN;
+					maxAvailableHeight = originalSelectRect.top - topBoundaryRect.bottom - BOUNDARY_MARGIN;
 				} else {
 					console.warn(`${SCRIPT_NAME}: Top boundary element '#${TOP_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
 					maxAvailableHeight = originalSelectRect.top - BOUNDARY_MARGIN;
 				}
 			} else {
+				// --- B. 处理向下弹出的情况 ---
 				if (bottomBoundaryEl) {
 					const bottomBoundaryRect = bottomBoundaryEl.getBoundingClientRect();
-					// (修改点) 可用高度 = 锚点元素【底部】 - 下拉框底部 - 间距
-					maxAvailableHeight = bottomBoundaryRect.bottom - originalSelectRect.bottom - BOUNDARY_MARGIN;
+					maxAvailableHeight = bottomBoundaryRect.top - originalSelectRect.bottom - BOUNDARY_MARGIN;
 				} else {
 					console.warn(`${SCRIPT_NAME}: Bottom boundary element '#${BOTTOM_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
 					maxAvailableHeight = window.innerHeight - originalSelectRect.bottom - BOUNDARY_MARGIN;
 				}
 			}
 			
+			// 3. 应用计算出的最大高度 (确保不为负数)
 			optionsList.style.maxHeight = `${Math.max(0, maxAvailableHeight)}px`;
 			
 			container.classList.add('open');
