@@ -2,7 +2,7 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V2.6]'; // 版本号+1
+    const SCRIPT_NAME = '[The Great Replacer V1.1]'; // 版本号
     const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
