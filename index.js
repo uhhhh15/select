@@ -2,8 +2,8 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V2.5]'; // 版本号+1
-    const REPLACED_MARKER = 'data-great-replacer-processed-v2';
+    const SCRIPT_NAME = '[The Great Replacer V1.0]'; // 版本号
+    const REPLACED_MARKER = 'data-great-replacer-processed-v1';
 
     // 需要向上弹出的<select>元素的ID列表
     const DROP_UP_IDS = ['custom_prompt_post_processing', 'model_custom_select'];
@@ -13,7 +13,8 @@
         'themes': 'UI-Theme-Block',
         'world_editor_select': 'WorldInfo',
         'settings_preset_openai': 'left-nav-panel',
-        'completion_prompt_manager_footer_append_prompt': 'left-nav-panel'
+        'completion_prompt_manager_footer_append_prompt': 'left-nav-panel',
+        'extensionTopBarChatName': 'extensionTopBar'
     };
     
     // 为 world_popup_entries_list 中的下拉框提供选项缓存
@@ -26,6 +27,8 @@
     // 用于监听 WorldInfo 内部变化的观察者，初始为 null
     let entriesListObserver = null;
 
+    // 主题状态
+    let isDarkMode = localStorage.getItem('gr-dark-mode') === 'true';
 
     // --- 2. 注入样式 ---
     const customStyles = `
@@ -53,6 +56,13 @@
             z-index: 2147483647;
             scrollbar-width: none !important;
             -ms-overflow-style: none;
+        }
+        
+        /* 暗色模式样式 */
+        body.dark-mode .gr-options {
+            background-color: rgba(30, 30, 30, 1) !important;
+            border: 1px solid rgba(60, 60, 60, 0.5) !important;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
         .gr-options::-webkit-scrollbar { display: none; }
         .gr-container-enhanced.open .gr-options { display: block; }
@@ -94,6 +104,20 @@
         .gr-options input[type="text"]:hover, .gr-options input:not([type]):hover, .gr-options textarea:not([type="search"]):hover {
             border-color: #64b5f6 !important;
         }
+        
+        /* 暗色模式输入框样式 */
+        body.dark-mode .gr-options input[type="text"],
+        body.dark-mode .gr-options input:not([type]),
+        body.dark-mode .gr-options textarea:not([type="search"]) {
+            background-color: rgba(50, 50, 50, 1) !important;
+            border: 1.5px solid rgba(80, 80, 80, 0.5) !important;
+            color: #ffffff !important;
+        }
+        body.dark-mode .gr-options input[type="text"]:hover,
+        body.dark-mode .gr-options input:not([type]):hover,
+        body.dark-mode .gr-options textarea:not([type="search"]):hover {
+            border-color: rgba(216, 168, 231, 0.5) !important;
+        }
         .gr-search-box {
             position: sticky; top: 0;
             background: linear-gradient(to bottom, #ffffff 90%, rgba(255, 255, 255, 0));
@@ -109,6 +133,14 @@
             background: linear-gradient(to top, #ffffff 90%, rgba(255, 255, 255, 0));
             padding: 4px 8px 8px 8px;
         }
+        
+        /* 暗色模式搜索框背景 */
+        body.dark-mode .gr-search-box {
+            background: linear-gradient(to bottom, rgba(30, 30, 30, 1) 90%, rgba(30, 30, 30, 0));
+        }
+        body.dark-mode .gr-container-enhanced.drop-up .gr-search-box {
+            background: linear-gradient(to top, rgba(30, 30, 30, 1) 90%, rgba(30, 30, 30, 0));
+        }
         .gr-search-input {
             width: 100%; padding: 8px 12px; border: 1.5px solid #f5f5f5;
             border-radius: 8px; font-size: inherit; font-weight: 400; outline: none;
@@ -116,6 +148,7 @@
             transition: border-color 0.2s ease, background-color 0.2s ease;
             -webkit-appearance: none !important; appearance: none !important;
             cursor: text !important;
+            caret-color: transparent; /* 默认隐藏光标 */
         }
         .gr-search-input::placeholder { color: #b0b0b0; }
         .gr-search-input:hover {
@@ -124,7 +157,26 @@
         .gr-search-input:focus {
             background-color: #ffffff !important;
             border-color: #42a5f5 !important;
-            caret-color: #42a5f5; /* 【新增】修改光标颜色 */
+            caret-color: #42a5f5; /* 只在聚焦时显示光标 */
+        }
+        
+        /* 暗色模式搜索输入框 */
+        body.dark-mode .gr-search-input {
+            background-color: rgba(50, 50, 50, 1) !important;
+            color: #ffffff !important;
+            border: 1.5px solid rgba(80, 80, 80, 0.5) !important;
+            caret-color: transparent; /* 默认隐藏光标 */
+        }
+        body.dark-mode .gr-search-input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        body.dark-mode .gr-search-input:hover {
+            border-color: rgba(216, 168, 231, 0.5) !important;
+        }
+        body.dark-mode .gr-search-input:focus {
+            background-color: rgba(40, 40, 40, 1) !important;
+            border-color: rgba(216, 168, 231, 0.7) !important;
+            caret-color: rgba(216, 168, 231, 0.7); /* 只在聚焦时显示紫色光标 */
         }
         .gr-options-container { padding: 2px 0 4px 0; }
         .gr-option {
@@ -145,6 +197,22 @@
         .gr-option.selected {
             background-color: #e3f2fd !important; color: #1565c0 !important; font-weight: 600;
         }
+        
+        /* 暗色模式选项样式 */
+        body.dark-mode .gr-option {
+            color: #ffffff !important;
+        }
+        body.dark-mode .gr-option:hover {
+            background-color: transparent !important; /* 悬停时不要背景色 */
+            color: rgba(216, 168, 231, 0.95) !important; /* 只改变文字颜色 */
+        }
+        body.dark-mode .gr-option:hover::before {
+            background-color: rgba(216, 168, 231, 0.95); /* 左侧指示条颜色 */
+        }
+        body.dark-mode .gr-option.selected {
+            background-color: rgba(216, 168, 231, 0.15) !important; /* 选中项的背景色 */
+            color: rgba(216, 168, 231, 0.95) !important;
+        }
         .gr-option.hidden { display: none; }
 
         /* 【新增】optgroup 标签的样式 */
@@ -152,15 +220,25 @@
             padding: 10px 12px 4px 12px;
             font-size: 12px;
             font-weight: 700;
-            color: #78909c; /* 蓝灰色 */
+            color: #78909c;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             cursor: default;
             user-select: none;
         }
+        
+        /* 暗色模式组标签 */
+        body.dark-mode .gr-group-label {
+            color: rgba(255, 255, 255, 0.6);
+        }
 
         .gr-no-results {
             padding: 32px 20px; text-align: center; color: #9e9e9e; font-size: 14px;
+        }
+        
+        /* 暗色模式无结果提示 */
+        body.dark-mode .gr-no-results {
+            color: rgba(255, 255, 255, 0.5);
         }
     `;
 
@@ -172,202 +250,259 @@
         };
     }
 
-    function replaceSelect(originalSelect) {
-        if (originalSelect.hasAttribute(REPLACED_MARKER)) return;
-        originalSelect.setAttribute(REPLACED_MARKER, 'true');
-        
-        originalSelect.style.outline = 'none';
-        originalSelect.style.border = 'none';
+	function replaceSelect(originalSelect) {
+		if (originalSelect.hasAttribute(REPLACED_MARKER)) return;
+		originalSelect.setAttribute(REPLACED_MARKER, 'true');
+		
+		originalSelect.style.outline = 'none';
+		originalSelect.style.border = 'none';
 
-        const container = window.parent.document.createElement('div');
-        container.className = 'gr-container-enhanced';
+		const container = window.parent.document.createElement('div');
+		container.className = 'gr-container-enhanced';
 
-        if (DROP_UP_IDS.includes(originalSelect.id)) {
-            container.classList.add('drop-up');
-        }
+		if (DROP_UP_IDS.includes(originalSelect.id)) {
+			container.classList.add('drop-up');
+		}
 
-        const optionsList = window.parent.document.createElement('div');
-        optionsList.className = 'gr-options';
-        optionsList.addEventListener('mousedown', (e) => e.stopPropagation());
+		const optionsList = window.parent.document.createElement('div');
+		optionsList.className = 'gr-options';
 
-        const searchBox = window.parent.document.createElement('div');
-        searchBox.className = 'gr-search-box';
-        searchBox.style.display = 'none';
-        const searchInput = window.parent.document.createElement('input');
-        searchInput.className = 'gr-search-input';
-        searchInput.type = 'text';
-        searchInput.placeholder = '搜索选项...';
-        searchBox.appendChild(searchInput);
-        
-        const optionsContainer = window.parent.document.createElement('div');
-        optionsContainer.className = 'gr-options-container';
-        
-        if (container.classList.contains('drop-up')) {
-            optionsList.appendChild(optionsContainer);
-            optionsList.appendChild(searchBox);
-        } else {
-            optionsList.appendChild(searchBox);
-            optionsList.appendChild(optionsContainer);
-        }
-        
-        const performSearch = debounce((searchTerm) => {
-            searchTerm = searchTerm.toLowerCase();
-            let hasVisible = false;
-            optionsContainer.querySelectorAll('.gr-option').forEach(option => {
-                const isVisible = option.textContent.toLowerCase().includes(searchTerm);
-                option.classList.toggle('hidden', !isVisible);
-                if(isVisible) hasVisible = true;
-            });
-            let noResultsMsg = optionsContainer.querySelector('.gr-no-results');
-            if (!hasVisible && !noResultsMsg) {
-                noResultsMsg = window.parent.document.createElement('div');
-                noResultsMsg.className = 'gr-no-results';
-                noResultsMsg.textContent = '没有找到匹配的选项';
-                optionsContainer.appendChild(noResultsMsg);
-            } else if (hasVisible && noResultsMsg) {
-                noResultsMsg.remove();
-            }
-        }, 200);
-        
-        searchInput.addEventListener('input', (e) => performSearch(e.target.value));
-        searchInput.addEventListener('mouseenter', () => searchInput.focus());
-        searchInput.addEventListener('mouseleave', () => { if (searchInput.value === '') searchInput.blur(); });
-        searchInput.addEventListener('click', e => e.stopPropagation());
-        searchInput.addEventListener('mousedown', e => e.preventDefault());
+		['mousedown', 'click', 'touchstart', 'touchend'].forEach(eventType => {
+			optionsList.addEventListener(eventType, (e) => {
+				e.stopPropagation();
+			});
+		});
 
-        function updateContainerPosition() {
-            if (!window.parent.document.body.contains(originalSelect)) return;
-            const rect = originalSelect.getBoundingClientRect();
-            let finalWidth = rect.width;
-            const targetWidthId = WIDTH_TARGETS[originalSelect.id];
-            if (targetWidthId) {
-                const targetElement = window.parent.document.getElementById(targetWidthId);
-                if (targetElement) {
-                    const targetRect = targetElement.getBoundingClientRect();
-                    finalWidth = targetRect.right - rect.left;
-                }
-            }
-            container.style.position = 'absolute';
-            container.style.top = `${rect.top + window.scrollY}px`;
-            container.style.left = `${rect.left + window.scrollX}px`;
-            container.style.width = `${finalWidth}px`;
-            container.style.height = `${rect.height}px`;
-        }
-        
-        const isWorldInfoSelect = originalSelect.name === '$' && originalSelect.closest('#world_popup_entries_list');
-        
-        // 【核心修改】重构此函数以支持 optgroup
-        function populateOptions() {
-            optionsContainer.innerHTML = '';
-            
-            // 辅助函数，用于创建单个选项元素，避免代码重复
-            const createOptionDiv = (optionNode) => {
-                const customOption = window.parent.document.createElement('div');
-                customOption.className = 'gr-option';
-                customOption.textContent = optionNode.textContent;
-                customOption.dataset.value = optionNode.value;
-                if (optionNode.selected) {
-                    customOption.classList.add('selected');
-                }
-                customOption.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    originalSelect.value = customOption.dataset.value;
-                    originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
-                    container.classList.remove('open');
-                });
-                return customOption;
-            };
+		let isTouchScrolling = false;
+		optionsList.addEventListener('touchstart', () => { isTouchScrolling = false; }, { passive: true });
+		optionsList.addEventListener('touchmove', () => { isTouchScrolling = true; }, { passive: true });
 
-            // 如果是特殊下拉框并且缓存已经填充
-            if (isWorldInfoSelect && isWorldInfoCachePopulated) {
-                worldInfoCache.options.forEach(cachedOpt => {
-                    const fakeOptionNode = {
-                        textContent: cachedOpt.text,
-                        value: cachedOpt.value,
-                        selected: originalSelect.value === cachedOpt.value
-                    };
-                    optionsContainer.appendChild(createOptionDiv(fakeOptionNode));
-                });
-            } else {
-                // 否则，从DOM读取，并处理 optgroup
-                Array.from(originalSelect.children).forEach(child => {
-                    if (child.tagName === 'OPTGROUP') {
-                        // 如果是 optgroup，为其创建一个标题
-                        const groupLabel = window.parent.document.createElement('div');
-                        groupLabel.className = 'gr-group-label';
-                        groupLabel.textContent = child.label;
-                        optionsContainer.appendChild(groupLabel);
+		const searchBox = window.parent.document.createElement('div');
+		searchBox.className = 'gr-search-box';
+		searchBox.style.display = 'none';
+		const searchInput = window.parent.document.createElement('input');
+		searchInput.className = 'gr-search-input';
+		searchInput.type = 'text';
+		searchInput.placeholder = '搜索选项...';
+		searchBox.appendChild(searchInput);
+		
+		const optionsContainer = window.parent.document.createElement('div');
+		optionsContainer.className = 'gr-options-container';
+		
+		if (container.classList.contains('drop-up')) {
+			optionsList.appendChild(optionsContainer);
+			optionsList.appendChild(searchBox);
+		} else {
+			optionsList.appendChild(searchBox);
+			optionsList.appendChild(optionsContainer);
+		}
+		
+		const performSearch = debounce((searchTerm) => {
+			searchTerm = searchTerm.toLowerCase();
+			let hasVisible = false;
+			optionsContainer.querySelectorAll('.gr-option').forEach(option => {
+				const isVisible = option.textContent.toLowerCase().includes(searchTerm);
+				option.classList.toggle('hidden', !isVisible);
+				if(isVisible) hasVisible = true;
+			});
+			let noResultsMsg = optionsContainer.querySelector('.gr-no-results');
+			if (!hasVisible && !noResultsMsg) {
+				noResultsMsg = window.parent.document.createElement('div');
+				noResultsMsg.className = 'gr-no-results';
+				noResultsMsg.textContent = '没有找到匹配的选项';
+				optionsContainer.appendChild(noResultsMsg);
+			} else if (hasVisible && noResultsMsg) {
+				noResultsMsg.remove();
+			}
+		}, 200);
+		
+		searchInput.addEventListener('input', (e) => {
+			const searchTerm = e.target.value;
+			if (searchTerm === '/切换主题') {
+				toggleTheme();
+				searchInput.value = '';
+				performSearch('');
+				return;
+			}
+			performSearch(searchTerm);
+		});
+		
+		function updateContainerPosition() {
+			if (!window.parent.document.body.contains(originalSelect)) return;
+			const rect = originalSelect.getBoundingClientRect();
+			let finalWidth = rect.width;
+			const targetWidthId = WIDTH_TARGETS[originalSelect.id];
+			if (targetWidthId) {
+				const targetElement = window.parent.document.getElementById(targetWidthId);
+				if (targetElement) {
+					const targetRect = targetElement.getBoundingClientRect();
+					finalWidth = targetRect.right - rect.left;
+				}
+			}
+			container.style.position = 'absolute';
+			container.style.top = `${rect.top + window.scrollY}px`;
+			container.style.left = `${rect.left + window.scrollX}px`;
+			container.style.width = `${finalWidth}px`;
+			container.style.height = `${rect.height}px`;
+		}
+		
+		const isWorldInfoSelect = originalSelect.name === '$' && originalSelect.closest('#world_popup_entries_list');
+		
+		function populateOptions() {
+			optionsContainer.innerHTML = '';
+			
+			const createOptionDiv = (optionNode) => {
+				const customOption = window.parent.document.createElement('div');
+				customOption.className = 'gr-option';
+				customOption.textContent = optionNode.textContent;
+				customOption.dataset.value = optionNode.value;
+				if (optionNode.selected) {
+					customOption.classList.add('selected');
+				}
 
-                        // 然后遍历 optgroup 内的 option
-                        Array.from(child.children).forEach(optionNode => {
-                            if (optionNode.tagName === 'OPTION') {
-                                optionsContainer.appendChild(createOptionDiv(optionNode));
-                            }
-                        });
-                    } else if (child.tagName === 'OPTION') {
-                        // 如果是顶级的 option
-                        optionsContainer.appendChild(createOptionDiv(child));
-                    }
-                });
-            }
-            
-            // 使用 originalSelect.options.length 来判断是否显示搜索框，这能正确统计所有<option>
-            searchBox.style.display = originalSelect.options.length >= 10 ? 'block' : 'none';
-            searchInput.value = '';
-            performSearch(''); // 填充后重置搜索
-        }
-        
-        populateOptions();
+				const handleSelect = (event) => {
+					if (!event.target.closest('.gr-option')) return;
+					if (!container.classList.contains('open')) return;
+					
+					originalSelect.value = customOption.dataset.value;
+					originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
+					container.classList.remove('open');
+				};
+				
+				customOption.addEventListener('mousedown', (e) => {
+					if (e.button === 0) {
+						e.preventDefault();
+						handleSelect(e);
+					}
+				});
 
-        let scrollListeners = [];
-        
-        originalSelect.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            if (container.classList.contains('open')) {
-                container.classList.remove('open');
-                scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
-                scrollListeners = [];
-                return;
-            }
-            window.parent.document.querySelectorAll('.gr-container-enhanced.open').forEach(c => c.classList.remove('open'));
-            
-            updateContainerPosition();
-            
-            const rect = originalSelect.getBoundingClientRect();
-            if (container.classList.contains('drop-up')) {
-                const maxAvailableHeight = rect.top - 20;
-                optionsList.style.maxHeight = `${maxAvailableHeight}px`;
-            } else {
-                const dropdownTop = rect.bottom + 4;
-                const maxAvailableHeight = window.innerHeight - dropdownTop - 20;
-                optionsList.style.maxHeight = `${maxAvailableHeight}px`;
-                optionsList.style.setProperty('--dropdown-top', `${dropdownTop}px`);
-            }
-            
-            container.classList.add('open');
-            populateOptions();
-            
-            const scrollHandler = (event) => {
-                if (optionsList.contains(event.target)) return;
-                container.classList.remove('open');
-                scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
-                scrollListeners = [];
-            };
-            
-            let parent = originalSelect.parentElement;
-            while (parent) {
-                scrollListeners.push({ element: parent, handler: scrollHandler });
-                parent.addEventListener('scroll', scrollHandler, true);
-                parent = parent.parentElement;
-            }
-            
-            scrollListeners.push({ element: window, handler: scrollHandler });
-            window.addEventListener('scroll', scrollHandler, true);
-        });
+				customOption.addEventListener('touchend', (e) => {
+					if (!isTouchScrolling) {
+						e.preventDefault();
+						handleSelect(e);
+					}
+				});
 
-        container.appendChild(optionsList);
-        window.parent.document.body.appendChild(container);
-    }
+				return customOption;
+			};
+
+			if (isWorldInfoSelect && isWorldInfoCachePopulated) {
+				worldInfoCache.options.forEach(cachedOpt => {
+					const fakeOptionNode = {
+						textContent: cachedOpt.text,
+						value: cachedOpt.value,
+						selected: originalSelect.value === cachedOpt.value
+					};
+					optionsContainer.appendChild(createOptionDiv(fakeOptionNode));
+				});
+			} else {
+				Array.from(originalSelect.children).forEach(child => {
+					if (child.tagName === 'OPTGROUP') {
+						const groupLabel = window.parent.document.createElement('div');
+						groupLabel.className = 'gr-group-label';
+						groupLabel.textContent = child.label;
+						optionsContainer.appendChild(groupLabel);
+
+						Array.from(child.children).forEach(optionNode => {
+							if (optionNode.tagName === 'OPTION') {
+								optionsContainer.appendChild(createOptionDiv(optionNode));
+							}
+						});
+					} else if (child.tagName === 'OPTION') {
+						optionsContainer.appendChild(createOptionDiv(child));
+					}
+				});
+			}
+			
+			searchBox.style.display = originalSelect.options.length >= 10 ? 'block' : 'none';
+			searchInput.value = '';
+			performSearch('');
+		}
+		
+		populateOptions();
+
+		let scrollListeners = [];
+		
+		// --- START: 这是修正后的 openDropdown 函数 ---
+		const openDropdown = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+
+			if (container.classList.contains('open')) {
+				container.classList.remove('open');
+				scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
+				scrollListeners = [];
+				return;
+			}
+			window.parent.document.querySelectorAll('.gr-container-enhanced.open').forEach(c => c.classList.remove('open'));
+			
+			updateContainerPosition();
+
+			const TOP_BOUNDARY_ID = 'top-settings-holder';
+			const BOTTOM_BOUNDARY_ID = 'send_form';
+			const BOUNDARY_MARGIN = 10; 
+
+			const originalSelectRect = originalSelect.getBoundingClientRect();
+			const topBoundaryEl = window.parent.document.getElementById(TOP_BOUNDARY_ID);
+			const bottomBoundaryEl = window.parent.document.getElementById(BOTTOM_BOUNDARY_ID);
+
+			let maxAvailableHeight;
+
+			if (container.classList.contains('drop-up')) {
+				if (topBoundaryEl) {
+					const topBoundaryRect = topBoundaryEl.getBoundingClientRect();
+					// (修改点) 可用高度 = 下拉框顶部 - 锚点元素【顶部】 - 间距
+					maxAvailableHeight = originalSelectRect.top - topBoundaryRect.top - BOUNDARY_MARGIN;
+				} else {
+					console.warn(`${SCRIPT_NAME}: Top boundary element '#${TOP_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
+					maxAvailableHeight = originalSelectRect.top - BOUNDARY_MARGIN;
+				}
+			} else {
+				if (bottomBoundaryEl) {
+					const bottomBoundaryRect = bottomBoundaryEl.getBoundingClientRect();
+					// (修改点) 可用高度 = 锚点元素【底部】 - 下拉框底部 - 间距
+					maxAvailableHeight = bottomBoundaryRect.bottom - originalSelectRect.bottom - BOUNDARY_MARGIN;
+				} else {
+					console.warn(`${SCRIPT_NAME}: Bottom boundary element '#${BOTTOM_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
+					maxAvailableHeight = window.innerHeight - originalSelectRect.bottom - BOUNDARY_MARGIN;
+				}
+			}
+			
+			optionsList.style.maxHeight = `${Math.max(0, maxAvailableHeight)}px`;
+			
+			container.classList.add('open');
+			populateOptions();
+			
+			const scrollHandler = (event) => {
+				if (optionsList.contains(event.target)) return;
+				container.classList.remove('open');
+				scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
+				scrollListeners = [];
+			};
+			
+			let parent = originalSelect.parentElement;
+			while (parent) {
+				scrollListeners.push({ element: parent, handler: scrollHandler });
+				parent.addEventListener('scroll', scrollHandler, true);
+				parent = parent.parentElement;
+			}
+			
+			scrollListeners.push({ element: window, handler: scrollHandler });
+			window.addEventListener('scroll', scrollHandler, true);
+		};
+		// --- END: 修正后的 openDropdown 函数 ---
+
+		originalSelect.addEventListener('mousedown', openDropdown);
+		originalSelect.addEventListener('touchend', openDropdown);
+
+		originalSelect.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		});
+
+		container.appendChild(optionsList);
+		window.parent.document.body.appendChild(container);
+	}
     
     // 【无变动】启动对 world_popup_entries_list 的监听
     function startObservingEntriesList() {
@@ -415,12 +550,31 @@
     /**
      * 初始化脚本
      */
+    // 主题切换函数
+    function toggleTheme() {
+        isDarkMode = !isDarkMode;
+        localStorage.setItem('gr-dark-mode', isDarkMode);
+        
+        if (isDarkMode) {
+            window.parent.document.body.classList.add('dark-mode');
+        } else {
+            window.parent.document.body.classList.remove('dark-mode');
+        }
+        
+        console.log(`${SCRIPT_NAME}: 主题已切换为 ${isDarkMode ? '暗色' : '亮色'} 模式`);
+    }
+    
     function initialize() {
         console.log(`${SCRIPT_NAME} is running!`);
 
         const styleSheet = window.parent.document.createElement("style");
         styleSheet.innerText = customStyles;
         window.parent.document.head.appendChild(styleSheet);
+        
+        // 应用保存的主题
+        if (isDarkMode) {
+            window.parent.document.body.classList.add('dark-mode');
+        }
         
         const closeAllOpenDropdowns = () => {
             window.parent.document.querySelectorAll('.gr-container-enhanced.open').forEach(container => {
