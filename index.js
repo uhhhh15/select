@@ -1,9 +1,10 @@
+下拉框.js
 (async () => {
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.0]'; // 版本号
-    const REPLACED_MARKER = 'data-great-replacer-processed-v1';
+    const SCRIPT_NAME = '[The Great Replacer V1.2]'; // 版本号更新
+    const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
     const DROP_UP_IDS = ['custom_prompt_post_processing', 'model_custom_select'];
@@ -215,7 +216,7 @@
         }
         .gr-option.hidden { display: none; }
 
-        /* 【新增】optgroup 标签的样式 */
+        /* optgroup 标签的样式 */
         .gr-group-label {
             padding: 10px 12px 4px 12px;
             font-size: 12px;
@@ -423,7 +424,6 @@
 
 		let scrollListeners = [];
 		
-		// --- START: 这是修正后的 openDropdown 函数 ---
 		const openDropdown = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -438,12 +438,10 @@
 			
 			updateContainerPosition();
 
-			// 1. 定义边界元素ID和安全间距
 			const TOP_BOUNDARY_ID = 'top-settings-holder';
 			const BOTTOM_BOUNDARY_ID = 'send_form';
-			const BOUNDARY_MARGIN = 10; // 弹窗与边界元素之间的空隙
+			const BOUNDARY_MARGIN = 10;
 
-			// 2. 获取所有需要的位置信息
 			const originalSelectRect = originalSelect.getBoundingClientRect();
 			const topBoundaryEl = window.parent.document.getElementById(TOP_BOUNDARY_ID);
 			const bottomBoundaryEl = window.parent.document.getElementById(BOTTOM_BOUNDARY_ID);
@@ -451,7 +449,6 @@
 			let maxAvailableHeight;
 
 			if (container.classList.contains('drop-up')) {
-				// --- A. 处理向上弹出的情况 ---
 				if (topBoundaryEl) {
 					const topBoundaryRect = topBoundaryEl.getBoundingClientRect();
 					maxAvailableHeight = originalSelectRect.top - topBoundaryRect.bottom - BOUNDARY_MARGIN;
@@ -460,7 +457,6 @@
 					maxAvailableHeight = originalSelectRect.top - BOUNDARY_MARGIN;
 				}
 			} else {
-				// --- B. 处理向下弹出的情况 ---
 				if (bottomBoundaryEl) {
 					const bottomBoundaryRect = bottomBoundaryEl.getBoundingClientRect();
 					maxAvailableHeight = bottomBoundaryRect.top - originalSelectRect.bottom - BOUNDARY_MARGIN;
@@ -470,7 +466,6 @@
 				}
 			}
 			
-			// 3. 应用计算出的最大高度 (确保不为负数)
 			optionsList.style.maxHeight = `${Math.max(0, maxAvailableHeight)}px`;
 			
 			container.classList.add('open');
@@ -478,6 +473,14 @@
 			
 			const scrollHandler = (event) => {
 				if (optionsList.contains(event.target)) return;
+
+                // 【修复】移动端键盘兼容：检查当前激活的元素是否为本下拉框的搜索框。
+                // 如果是，说明滚动很可能是由虚拟键盘弹出引起的，此时不关闭下拉框。
+                const activeEl = window.parent.document.activeElement;
+                if (activeEl && activeEl === searchInput) {
+                    return;
+                }
+
 				container.classList.remove('open');
 				scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
 				scrollListeners = [];
@@ -493,7 +496,6 @@
 			scrollListeners.push({ element: window, handler: scrollHandler });
 			window.addEventListener('scroll', scrollHandler, true);
 		};
-		// --- END: 修正后的 openDropdown 函数 ---
 
 		originalSelect.addEventListener('mousedown', openDropdown);
 		originalSelect.addEventListener('touchend', openDropdown);
@@ -507,9 +509,8 @@
 		window.parent.document.body.appendChild(container);
 	}
     
-    // 【无变动】启动对 world_popup_entries_list 的监听
     function startObservingEntriesList() {
-        if (entriesListObserver) return; // 防止重复启动
+        if (entriesListObserver) return; 
 
         const entriesList = window.parent.document.getElementById('world_popup_entries_list');
         if (!entriesList) {
@@ -541,7 +542,6 @@
         });
     }
 
-    // 【无变动】停止对 world_popup_entries_list 的监听
     function stopObservingEntriesList() {
         if (entriesListObserver) {
             entriesListObserver.disconnect();
@@ -550,10 +550,6 @@
         }
     }
 
-    /**
-     * 初始化脚本
-     */
-    // 主题切换函数
     function toggleTheme() {
         isDarkMode = !isDarkMode;
         localStorage.setItem('gr-dark-mode', isDarkMode);
@@ -574,7 +570,6 @@
         styleSheet.innerText = customStyles;
         window.parent.document.head.appendChild(styleSheet);
         
-        // 应用保存的主题
         if (isDarkMode) {
             window.parent.document.body.classList.add('dark-mode');
         }
@@ -591,7 +586,18 @@
             }
         });
 
-        window.addEventListener('resize', closeAllOpenDropdowns);
+        // 【修复】移动端键盘兼容：修改 resize 事件监听器。
+        // 当虚拟键盘弹出/收起时会触发 resize 事件，此判断可防止下拉框意外关闭。
+        window.addEventListener('resize', () => {
+            const activeEl = window.parent.document.activeElement;
+            // 检查当前拥有焦点的元素是否为任何一个已打开的下拉框中的搜索框
+            if (activeEl && activeEl.matches('.gr-container-enhanced.open .gr-search-input')) {
+                // 如果是，则不关闭下拉框，因为这很可能是虚拟键盘导致的 resize。
+                return;
+            }
+            // 否则，正常关闭所有下拉框。
+            closeAllOpenDropdowns();
+        });
         
         window.parent.document.querySelectorAll(`select:not([${REPLACED_MARKER}])`).forEach(replaceSelect);
         
