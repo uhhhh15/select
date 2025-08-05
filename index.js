@@ -250,8 +250,36 @@
         };
     }
 
-	function replaceSelect(originalSelect) {
+	function replaceSelect(originalSelect, forceReplace = false) {
 		if (originalSelect.hasAttribute(REPLACED_MARKER)) return;
+
+		// 豁免规则 1: 跳过 .popup 内部的下拉框，除非被强制替换 (forceReplace=true)
+		if (!forceReplace && originalSelect.closest('.popup')) {
+			return;
+		}
+		// 如果是强制替换，我们就在日志中记录一下，方便调试
+		if (forceReplace) {
+			console.log(`${SCRIPT_NAME}: Force-replacing a whitelisted <select> element inside a popup.`, originalSelect);
+		}
+
+		// 豁免规则 2: 跳过已被 Select2 处理的下拉框 (这是一个通用规则，我们将在此基础上为 #WIMultiSelector 增加特例)
+		if (originalSelect.classList.contains('select2-hidden-accessible') || originalSelect.hasAttribute('data-select2-id')) {
+			// 即使被 Select2 处理，我们也要检查它是不是我们想要特殊处理的那个
+			if (!originalSelect.closest('#WIMultiSelector')) {
+				return;
+			}
+		}
+
+		// --- 新增逻辑: 识别特殊的多选框 ---
+		// .closest() 会检查当前元素或其任何祖先元素是否匹配选择器。
+		const isMultiSelectMode = originalSelect.closest('#WIMultiSelector') !== null;
+		if (isMultiSelectMode) {
+			// 确保原始的 <select> 开启了 multiple 属性，这是正确处理多选的基础
+			originalSelect.multiple = true;
+		}
+		// --- 新增逻辑结束 ---
+
+
 		originalSelect.setAttribute(REPLACED_MARKER, 'true');
 		
 		originalSelect.style.outline = 'none';
@@ -327,8 +355,13 @@
 			performSearch(searchTerm);
 		});
 		
+		// --- updateContainerPosition 函数将被下面的新版本替换 ---
 		function updateContainerPosition() {
 			if (!window.parent.document.body.contains(originalSelect)) return;
+		
+			// 查找原始<select>是否在<dialog>弹窗内部
+			const parentDialog = originalSelect.closest('dialog');
+		
 			const rect = originalSelect.getBoundingClientRect();
 			let finalWidth = rect.width;
 			const targetWidthId = WIDTH_TARGETS[originalSelect.id];
@@ -340,10 +373,22 @@
 				}
 			}
 			container.style.position = 'absolute';
-			container.style.top = `${rect.top + window.scrollY}px`;
-			container.style.left = `${rect.left + window.scrollX}px`;
 			container.style.width = `${finalWidth}px`;
 			container.style.height = `${rect.height}px`;
+		
+			if (parentDialog) {
+				// --- 弹窗内部的定位逻辑 ---
+				// 计算相对于<dialog>的位置
+				const parentRect = parentDialog.getBoundingClientRect();
+				// SillyTavern的弹窗中，.popup-body是滚动容器
+				const scrollContainer = parentDialog.querySelector('.popup-body') || parentDialog;
+				container.style.top = `${rect.top - parentRect.top + scrollContainer.scrollTop}px`;
+				container.style.left = `${rect.left - parentRect.left + scrollContainer.scrollLeft}px`;
+			} else {
+				// --- 原始的、在body中的定位逻辑 ---
+				container.style.top = `${rect.top + window.scrollY}px`;
+				container.style.left = `${rect.left + window.scrollX}px`;
+			}
 		}
 		
 		const isWorldInfoSelect = originalSelect.name === '$' && originalSelect.closest('#world_popup_entries_list');
@@ -356,6 +401,8 @@
 				customOption.className = 'gr-option';
 				customOption.textContent = optionNode.textContent;
 				customOption.dataset.value = optionNode.value;
+				
+				// 在创建时，直接从原始<option>节点的selected状态判断
 				if (optionNode.selected) {
 					customOption.classList.add('selected');
 				}
@@ -364,9 +411,21 @@
 					if (!event.target.closest('.gr-option')) return;
 					if (!container.classList.contains('open')) return;
 					
-					originalSelect.value = customOption.dataset.value;
-					originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
-					container.classList.remove('open');
+					if (isMultiSelectMode) {
+						// 找到原始的<option>元素
+						const originalOption = Array.from(originalSelect.options).find(opt => opt.value === customOption.dataset.value);
+						if (originalOption) {
+							// 切换其选中状态
+							originalOption.selected = !originalOption.selected;
+							customOption.classList.toggle('selected');
+							// 触发change事件，让应用知道值已改变
+							originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
+						}
+					} else {
+						originalSelect.value = customOption.dataset.value;
+						originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
+						container.classList.remove('open');
+					}
 				};
 				
 				customOption.addEventListener('mousedown', (e) => {
@@ -386,16 +445,58 @@
 				return customOption;
 			};
 
-			if (isWorldInfoSelect && isWorldInfoCachePopulated) {
+			// --- 开始修改 ---
+			// 检查是否为 WIMultiSelector 对应的多选模式
+			if (isMultiSelectMode) {
+				console.log(`${SCRIPT_NAME}: Applying special sorting for WIMultiSelector.`);
+				
+				// 1. 提取所有原始的 <option> 元素
+				const allOptions = Array.from(originalSelect.options);
+				
+				// 2. 将它们分为 "已选中" 和 "未选中" 两组
+				const selectedOptions = allOptions.filter(opt => opt.selected);
+				// (未选中的部分我们不直接过滤，而是按原结构遍历以保留optgroup)
+
+				// 3. 首先创建并添加所有“已选中”的选项
+				selectedOptions.forEach(optionNode => {
+					optionsContainer.appendChild(createOptionDiv(optionNode));
+				});
+				
+				// 4. 接着，遍历原始的 <select> 结构，只添加“未选中”的选项，这样可以保留 <optgroup>
+				Array.from(originalSelect.children).forEach(child => {
+					if (child.tagName === 'OPTGROUP') {
+						// 检查这个组里是否还有未选中的选项
+						const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected);
+						
+						if (unselectedChildren.length > 0) {
+							const groupLabel = window.parent.document.createElement('div');
+							groupLabel.className = 'gr-group-label';
+							groupLabel.textContent = child.label;
+							optionsContainer.appendChild(groupLabel);
+
+							unselectedChildren.forEach(optionNode => {
+								optionsContainer.appendChild(createOptionDiv(optionNode));
+							});
+						}
+					} else if (child.tagName === 'OPTION' && !child.selected) {
+						// 这是顶层的未选中选项
+						optionsContainer.appendChild(createOptionDiv(child));
+					}
+				});
+
+			} else if (isWorldInfoSelect && isWorldInfoCachePopulated) {
+				// 保留对 WorldInfo 的缓存逻辑
 				worldInfoCache.options.forEach(cachedOpt => {
+					const originalOption = Array.from(originalSelect.options).find(opt => opt.value === cachedOpt.value) || {};
 					const fakeOptionNode = {
 						textContent: cachedOpt.text,
 						value: cachedOpt.value,
-						selected: originalSelect.value === cachedOpt.value
+						selected: originalOption.selected || false
 					};
 					optionsContainer.appendChild(createOptionDiv(fakeOptionNode));
 				});
 			} else {
+				// 原始的通用逻辑，用于所有其他下拉框
 				Array.from(originalSelect.children).forEach(child => {
 					if (child.tagName === 'OPTGROUP') {
 						const groupLabel = window.parent.document.createElement('div');
@@ -413,6 +514,7 @@
 					}
 				});
 			}
+			// --- 修改结束 ---
 			
 			searchBox.style.display = originalSelect.options.length >= 10 ? 'block' : 'none';
 			searchInput.value = '';
@@ -437,22 +539,19 @@
 			
 			updateContainerPosition();
 
+			// --- 最大高度计算逻辑保持不变，它基于视口，是正确的 ---
 			const TOP_BOUNDARY_ID = 'top-settings-holder';
 			const BOTTOM_BOUNDARY_ID = 'send_form';
 			const BOUNDARY_MARGIN = 10;
-
 			const originalSelectRect = originalSelect.getBoundingClientRect();
 			const topBoundaryEl = window.parent.document.getElementById(TOP_BOUNDARY_ID);
 			const bottomBoundaryEl = window.parent.document.getElementById(BOTTOM_BOUNDARY_ID);
-
 			let maxAvailableHeight;
-
 			if (container.classList.contains('drop-up')) {
 				if (topBoundaryEl) {
 					const topBoundaryRect = topBoundaryEl.getBoundingClientRect();
 					maxAvailableHeight = originalSelectRect.top - topBoundaryRect.bottom - BOUNDARY_MARGIN;
 				} else {
-					console.warn(`${SCRIPT_NAME}: Top boundary element '#${TOP_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
 					maxAvailableHeight = originalSelectRect.top - BOUNDARY_MARGIN;
 				}
 			} else {
@@ -460,11 +559,9 @@
 					const bottomBoundaryRect = bottomBoundaryEl.getBoundingClientRect();
 					maxAvailableHeight = bottomBoundaryRect.top - originalSelectRect.bottom - BOUNDARY_MARGIN;
 				} else {
-					console.warn(`${SCRIPT_NAME}: Bottom boundary element '#${BOTTOM_BOUNDARY_ID}' not found. Falling back to viewport edge.`);
 					maxAvailableHeight = window.innerHeight - originalSelectRect.bottom - BOUNDARY_MARGIN;
 				}
 			}
-			
 			optionsList.style.maxHeight = `${Math.max(0, maxAvailableHeight)}px`;
 			
 			container.classList.add('open');
@@ -472,13 +569,10 @@
 			
 			const scrollHandler = (event) => {
 				if (optionsList.contains(event.target)) return;
-
-                // 【修复】移动端键盘兼容：检查当前激活的元素是否为本下拉框的搜索框。
-                // 如果是，说明滚动很可能是由虚拟键盘弹出引起的，此时不关闭下拉框。
-                const activeEl = window.parent.document.activeElement;
-                if (activeEl && activeEl === searchInput) {
-                    return;
-                }
+				const activeEl = window.parent.document.activeElement;
+				if (activeEl && activeEl === searchInput) {
+					return;
+				}
 
 				container.classList.remove('open');
 				scrollListeners.forEach(({ element, handler }) => element.removeEventListener('scroll', handler, true));
@@ -505,7 +599,14 @@
 		});
 
 		container.appendChild(optionsList);
-		window.parent.document.body.appendChild(container);
+
+		// --- 核心修改：决定容器的“家”在哪里 ---
+		// 查找原始select的父级中是否有<dialog>元素
+		const parentDialog = originalSelect.closest('dialog');
+		// 如果找到了<dialog>，就将容器添加到<dialog>中；否则，添加到body中
+		const appendTarget = parentDialog || window.parent.document.body;
+		appendTarget.appendChild(container);
+		// ------------------------------------
 	}
     
     function startObservingEntriesList() {
@@ -516,8 +617,6 @@
             console.warn(`${SCRIPT_NAME}: Could not find 'world_popup_entries_list' to observe.`);
             return;
         }
-
-        console.log(`${SCRIPT_NAME}: WorldInfo opened. Started observing 'world_popup_entries_list'.`);
 
         entriesListObserver = new MutationObserver(() => {
             if (isWorldInfoCachePopulated || entriesList.style.display === 'none') {
@@ -530,7 +629,6 @@
                     value: opt.value
                 }));
                 isWorldInfoCachePopulated = true;
-                console.log(`${SCRIPT_NAME}: Successfully cached ${worldInfoCache.options.length} world info options.`);
             }
         });
         entriesListObserver.observe(entriesList, {
@@ -545,7 +643,6 @@
         if (entriesListObserver) {
             entriesListObserver.disconnect();
             entriesListObserver = null;
-            console.log(`${SCRIPT_NAME}: WorldInfo closed. Stopped observing 'world_popup_entries_list'.`);
         }
     }
 
@@ -573,6 +670,32 @@
             window.parent.document.body.classList.add('dark-mode');
         }
         
+        // 为 Lorebook 按钮添加点击监听 ---
+        const lorebookButtonSelector = "#avatar_controls > div > div.chat_lorebook_button.menu_button.fa-solid.fa-passport.interactable";
+        const lorebookButton = window.parent.document.querySelector(lorebookButtonSelector);
+
+        if (lorebookButton) {
+            lorebookButton.addEventListener('click', () => {
+                console.log(`${SCRIPT_NAME}: Lorebook button clicked. Attempting to replace popup select...`);
+                // 弹出框需要一点时间来渲染，所以我们延迟执行
+                setTimeout(() => {
+                    const popupSelectSelector = "body > dialog > div.popup-body > div.popup-content > div > div.range-block-range.wide100p > select";
+                    const popupSelect = window.parent.document.querySelector(popupSelectSelector);
+                    
+                    if (popupSelect && !popupSelect.hasAttribute(REPLACED_MARKER)) {
+                        // 调用 replaceSelect 并传入 true，强制替换这个在 popup 中的下拉框
+                        replaceSelect(popupSelect, true);
+                    } else if (popupSelect) {
+                         console.log(`${SCRIPT_NAME}: Popup select already replaced.`);
+                    } else {
+                         console.warn(`${SCRIPT_NAME}: Could not find the popup select with selector: ${popupSelectSelector}`);
+                    }
+                }, 100); // 100毫秒的延迟通常足够了
+            });
+        } else {
+            console.warn(`${SCRIPT_NAME}: Could not find the lorebook button with selector: ${lorebookButtonSelector}`);
+        }
+        
         const closeAllOpenDropdowns = () => {
             window.parent.document.querySelectorAll('.gr-container-enhanced.open').forEach(container => {
                 container.classList.remove('open');
@@ -585,7 +708,6 @@
             }
         });
 
-        // 【修复】移动端键盘兼容：修改 resize 事件监听器。
         // 当虚拟键盘弹出/收起时会触发 resize 事件，此判断可防止下拉框意外关闭。
         window.addEventListener('resize', () => {
             const activeEl = window.parent.document.activeElement;
