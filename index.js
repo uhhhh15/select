@@ -2,7 +2,7 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.2]'; // 版本号更新
+    const SCRIPT_NAME = '[The Great Replacer V1.3]'; // 版本号更新
     const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
@@ -29,6 +29,11 @@
 
     // 主题状态
     let isDarkMode = localStorage.getItem('gr-dark-mode') === 'true';
+
+    // --- 核心修改开始 (1/4): 增加一个状态对象来管理特殊过滤 ---
+    // 这个对象将以 select 的 ID 为键，存储其过滤状态 (true/false)
+    const specialFilterState = {};
+    // --- 核心修改结束 (1/4) ---
 
     // --- 2. 注入样式 ---
     const customStyles = `
@@ -253,32 +258,32 @@
 	function replaceSelect(originalSelect, forceReplace = false) {
 		if (originalSelect.hasAttribute(REPLACED_MARKER)) return;
 
-		// 豁免规则 1: 跳过 .popup 内部的下拉框，除非被强制替换 (forceReplace=true)
 		if (!forceReplace && originalSelect.closest('.popup')) {
 			return;
 		}
-		// 如果是强制替换，我们就在日志中记录一下，方便调试
 		if (forceReplace) {
 			console.log(`${SCRIPT_NAME}: Force-replacing a whitelisted <select> element inside a popup.`, originalSelect);
 		}
 
-		// 豁免规则 2: 跳过已被 Select2 处理的下拉框 (这是一个通用规则，我们将在此基础上为 #WIMultiSelector 增加特例)
 		if (originalSelect.classList.contains('select2-hidden-accessible') || originalSelect.hasAttribute('data-select2-id')) {
-			// 即使被 Select2 处理，我们也要检查它是不是我们想要特殊处理的那个
 			if (!originalSelect.closest('#WIMultiSelector')) {
 				return;
 			}
 		}
 
-		// --- 新增逻辑: 识别特殊的多选框 ---
-		// .closest() 会检查当前元素或其任何祖先元素是否匹配选择器。
 		const isMultiSelectMode = originalSelect.closest('#WIMultiSelector') !== null;
 		if (isMultiSelectMode) {
-			// 确保原始的 <select> 开启了 multiple 属性，这是正确处理多选的基础
 			originalSelect.multiple = true;
 		}
-		// --- 新增逻辑结束 ---
-
+        
+        // --- 核心修改开始 (2/4): 识别目标下拉框并初始化其过滤状态 ---
+        const isPresetManagerSelect = originalSelect.id === 'completion_prompt_manager_footer_append_prompt';
+        if (isPresetManagerSelect) {
+            // 默认关闭过滤
+            specialFilterState[originalSelect.id] = false; 
+            console.log(`${SCRIPT_NAME}: Detected Preset Manager dropdown. Special commands enabled: /过滤, /取消过滤`);
+        }
+        // --- 核心修改结束 (2/4) ---
 
 		originalSelect.setAttribute(REPLACED_MARKER, 'true');
 		
@@ -311,7 +316,7 @@
 		const searchInput = window.parent.document.createElement('input');
 		searchInput.className = 'gr-search-input';
 		searchInput.type = 'text';
-		searchInput.placeholder = '搜索选项...';
+		searchInput.placeholder = '搜索或输入命令...'; // 更新提示文本
 		searchBox.appendChild(searchInput);
 		
 		const optionsContainer = window.parent.document.createElement('div');
@@ -344,22 +349,45 @@
 			}
 		}, 200);
 		
+        // --- 核心修改开始 (3/4): 修改搜索框的 input 事件，加入命令处理 ---
 		searchInput.addEventListener('input', (e) => {
 			const searchTerm = e.target.value;
+            
+            // 检查是否为预设管理器的特殊命令
+            if (isPresetManagerSelect) {
+                if (searchTerm === '/过滤') {
+                    specialFilterState[originalSelect.id] = true;
+                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已开启过滤模式。`);
+                    searchInput.value = ''; // 清空输入框
+                    populateOptions();      // 重新填充选项以应用过滤
+                    performSearch('');      // 重置搜索
+                    return; // 阻止后续的普通搜索
+                }
+                if (searchTerm === '/取消过滤') {
+                    specialFilterState[originalSelect.id] = false;
+                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已关闭过滤模式。`);
+                    searchInput.value = '';
+                    populateOptions();
+                    performSearch('');
+                    return;
+                }
+            }
+            
+            // 原有的主题切换命令
 			if (searchTerm === '/切换主题') {
 				toggleTheme();
 				searchInput.value = '';
 				performSearch('');
 				return;
 			}
+
 			performSearch(searchTerm);
 		});
+        // --- 核心修改结束 (3/4) ---
 		
-		// --- updateContainerPosition 函数将被下面的新版本替换 ---
 		function updateContainerPosition() {
 			if (!window.parent.document.body.contains(originalSelect)) return;
 		
-			// 查找原始<select>是否在<dialog>弹窗内部
 			const parentDialog = originalSelect.closest('dialog');
 		
 			const rect = originalSelect.getBoundingClientRect();
@@ -377,15 +405,11 @@
 			container.style.height = `${rect.height}px`;
 		
 			if (parentDialog) {
-				// --- 弹窗内部的定位逻辑 ---
-				// 计算相对于<dialog>的位置
 				const parentRect = parentDialog.getBoundingClientRect();
-				// SillyTavern的弹窗中，.popup-body是滚动容器
 				const scrollContainer = parentDialog.querySelector('.popup-body') || parentDialog;
 				container.style.top = `${rect.top - parentRect.top + scrollContainer.scrollTop}px`;
 				container.style.left = `${rect.left - parentRect.left + scrollContainer.scrollLeft}px`;
 			} else {
-				// --- 原始的、在body中的定位逻辑 ---
 				container.style.top = `${rect.top + window.scrollY}px`;
 				container.style.left = `${rect.left + window.scrollX}px`;
 			}
@@ -402,7 +426,6 @@
 				customOption.textContent = optionNode.textContent;
 				customOption.dataset.value = optionNode.value;
 				
-				// 在创建时，直接从原始<option>节点的selected状态判断
 				if (optionNode.selected) {
 					customOption.classList.add('selected');
 				}
@@ -412,13 +435,10 @@
 					if (!container.classList.contains('open')) return;
 					
 					if (isMultiSelectMode) {
-						// 找到原始的<option>元素
 						const originalOption = Array.from(originalSelect.options).find(opt => opt.value === customOption.dataset.value);
 						if (originalOption) {
-							// 切换其选中状态
 							originalOption.selected = !originalOption.selected;
 							customOption.classList.toggle('selected');
-							// 触发change事件，让应用知道值已改变
 							originalSelect.dispatchEvent(new Event('change', { 'bubbles': true }));
 						}
 					} else {
@@ -445,47 +465,60 @@
 				return customOption;
 			};
 
-			// --- 开始修改 ---
-			// 检查是否为 WIMultiSelector 对应的多选模式
-			if (isMultiSelectMode) {
-				console.log(`${SCRIPT_NAME}: Applying special sorting for WIMultiSelector.`);
-				
-				// 1. 提取所有原始的 <option> 元素
-				const allOptions = Array.from(originalSelect.options);
-				
-				// 2. 将它们分为 "已选中" 和 "未选中" 两组
-				const selectedOptions = allOptions.filter(opt => opt.selected);
-				// (未选中的部分我们不直接过滤，而是按原结构遍历以保留optgroup)
+			// --- 核心修改开始 (4/4): 修改 populateOptions 函数以集成过滤逻辑 ---
+            const isFilterActive = isPresetManagerSelect && specialFilterState[originalSelect.id] === true;
 
-				// 3. 首先创建并添加所有“已选中”的选项
+            if (isFilterActive) {
+                // 如果是预设管理器且过滤已开启
+                const listSelector = '#completion_prompt_manager_list';
+                const listItemSelector = 'li[data-pm-identifier]';
+                const list = window.parent.document.querySelector(listSelector);
+                const existingIdentifiers = new Set();
+
+                if (list) {
+                    list.querySelectorAll(listItemSelector).forEach(item => {
+                        const identifier = item.dataset.pmIdentifier;
+                        if (identifier) existingIdentifiers.add(identifier);
+                    });
+                } else {
+                    console.warn(`${SCRIPT_NAME}: Filter is active, but list '${listSelector}' was not found.`);
+                }
+
+                Array.from(originalSelect.options).forEach(optionNode => {
+                    // 如果选项的值不在已存在的标识符集合中，或者选项没有值（通常是占位符），则创建它
+                    if (!optionNode.value || !existingIdentifiers.has(optionNode.value)) {
+                        optionsContainer.appendChild(createOptionDiv(optionNode));
+                    }
+                });
+
+            } else if (isMultiSelectMode) {
+				// 多选模式的逻辑
+				const allOptions = Array.from(originalSelect.options);
+				const selectedOptions = allOptions.filter(opt => opt.selected);
+				
 				selectedOptions.forEach(optionNode => {
 					optionsContainer.appendChild(createOptionDiv(optionNode));
 				});
 				
-				// 4. 接着，遍历原始的 <select> 结构，只添加“未选中”的选项，这样可以保留 <optgroup>
 				Array.from(originalSelect.children).forEach(child => {
 					if (child.tagName === 'OPTGROUP') {
-						// 检查这个组里是否还有未选中的选项
 						const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected);
-						
 						if (unselectedChildren.length > 0) {
 							const groupLabel = window.parent.document.createElement('div');
 							groupLabel.className = 'gr-group-label';
 							groupLabel.textContent = child.label;
 							optionsContainer.appendChild(groupLabel);
-
 							unselectedChildren.forEach(optionNode => {
 								optionsContainer.appendChild(createOptionDiv(optionNode));
 							});
 						}
 					} else if (child.tagName === 'OPTION' && !child.selected) {
-						// 这是顶层的未选中选项
 						optionsContainer.appendChild(createOptionDiv(child));
 					}
 				});
 
 			} else if (isWorldInfoSelect && isWorldInfoCachePopulated) {
-				// 保留对 WorldInfo 的缓存逻辑
+				// WorldInfo 的缓存逻辑
 				worldInfoCache.options.forEach(cachedOpt => {
 					const originalOption = Array.from(originalSelect.options).find(opt => opt.value === cachedOpt.value) || {};
 					const fakeOptionNode = {
@@ -496,7 +529,7 @@
 					optionsContainer.appendChild(createOptionDiv(fakeOptionNode));
 				});
 			} else {
-				// 原始的通用逻辑，用于所有其他下拉框
+				// 默认的通用逻辑
 				Array.from(originalSelect.children).forEach(child => {
 					if (child.tagName === 'OPTGROUP') {
 						const groupLabel = window.parent.document.createElement('div');
@@ -514,11 +547,11 @@
 					}
 				});
 			}
-			// --- 修改结束 ---
+			// --- 核心修改结束 (4/4) ---
 			
 			searchBox.style.display = originalSelect.options.length >= 10 ? 'block' : 'none';
-			searchInput.value = '';
-			performSearch('');
+			// 注意：这里我们不再重置 searchInput 的值，因为它可能包含用户正在输入的命令或搜索词
+			performSearch(searchInput.value);
 		}
 		
 		populateOptions();
@@ -539,7 +572,6 @@
 			
 			updateContainerPosition();
 
-			// --- 最大高度计算逻辑保持不变，它基于视口，是正确的 ---
 			const TOP_BOUNDARY_ID = 'top-settings-holder';
 			const BOTTOM_BOUNDARY_ID = 'send_form';
 			const BOUNDARY_MARGIN = 10;
@@ -600,13 +632,9 @@
 
 		container.appendChild(optionsList);
 
-		// --- 核心修改：决定容器的“家”在哪里 ---
-		// 查找原始select的父级中是否有<dialog>元素
 		const parentDialog = originalSelect.closest('dialog');
-		// 如果找到了<dialog>，就将容器添加到<dialog>中；否则，添加到body中
 		const appendTarget = parentDialog || window.parent.document.body;
 		appendTarget.appendChild(container);
-		// ------------------------------------
 	}
     
     function startObservingEntriesList() {
@@ -670,30 +698,20 @@
             window.parent.document.body.classList.add('dark-mode');
         }
         
-        // 为 Lorebook 按钮添加点击监听 ---
         const lorebookButtonSelector = "#avatar_controls > div > div.chat_lorebook_button.menu_button.fa-solid.fa-passport.interactable";
         const lorebookButton = window.parent.document.querySelector(lorebookButtonSelector);
 
         if (lorebookButton) {
             lorebookButton.addEventListener('click', () => {
-                console.log(`${SCRIPT_NAME}: Lorebook button clicked. Attempting to replace popup select...`);
-                // 弹出框需要一点时间来渲染，所以我们延迟执行
                 setTimeout(() => {
                     const popupSelectSelector = "body > dialog > div.popup-body > div.popup-content > div > div.range-block-range.wide100p > select";
                     const popupSelect = window.parent.document.querySelector(popupSelectSelector);
                     
                     if (popupSelect && !popupSelect.hasAttribute(REPLACED_MARKER)) {
-                        // 调用 replaceSelect 并传入 true，强制替换这个在 popup 中的下拉框
                         replaceSelect(popupSelect, true);
-                    } else if (popupSelect) {
-                         console.log(`${SCRIPT_NAME}: Popup select already replaced.`);
-                    } else {
-                         console.warn(`${SCRIPT_NAME}: Could not find the popup select with selector: ${popupSelectSelector}`);
                     }
-                }, 100); // 100毫秒的延迟通常足够了
+                }, 100);
             });
-        } else {
-            console.warn(`${SCRIPT_NAME}: Could not find the lorebook button with selector: ${lorebookButtonSelector}`);
         }
         
         const closeAllOpenDropdowns = () => {
@@ -708,15 +726,11 @@
             }
         });
 
-        // 当虚拟键盘弹出/收起时会触发 resize 事件，此判断可防止下拉框意外关闭。
         window.addEventListener('resize', () => {
             const activeEl = window.parent.document.activeElement;
-            // 检查当前拥有焦点的元素是否为任何一个已打开的下拉框中的搜索框
             if (activeEl && activeEl.matches('.gr-container-enhanced.open .gr-search-input')) {
-                // 如果是，则不关闭下拉框，因为这很可能是虚拟键盘导致的 resize。
                 return;
             }
-            // 否则，正常关闭所有下拉框。
             closeAllOpenDropdowns();
         });
         
@@ -755,8 +769,6 @@
                 attributes: true,
                 attributeFilter: ['class']
             });
-        } else {
-            console.warn(`${SCRIPT_NAME}: Could not find '#WorldInfo' to set up drawer observer.`);
         }
 
         console.log(`${SCRIPT_NAME} initialization complete.`);
