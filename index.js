@@ -2,7 +2,7 @@
     "use strict";
 
     // --- 1. 配置 ---
-    const SCRIPT_NAME = '[The Great Replacer V1.3]'; // 版本号更新
+    const SCRIPT_NAME = '[The Great Replacer V1.4]'; // 版本号更新
     const REPLACED_MARKER = 'data-great-replacer-processed-v2';
 
     // 需要向上弹出的<select>元素的ID列表
@@ -30,10 +30,10 @@
     // 主题状态
     let isDarkMode = localStorage.getItem('gr-dark-mode') === 'true';
 
-    // --- 核心修改开始 (1/4): 增加一个状态对象来管理特殊过滤 ---
     // 这个对象将以 select 的 ID 为键，存储其过滤状态 (true/false)
     const specialFilterState = {};
-    // --- 核心修改结束 (1/4) ---
+    // --- 持久化修改 (1/3): 定义用于 localStorage 的键名 ---
+    const PRESET_FILTER_STORAGE_KEY = 'gr-preset-filter-enabled';
 
     // --- 2. 注入样式 ---
     const customStyles = `
@@ -276,14 +276,14 @@
 			originalSelect.multiple = true;
 		}
         
-        // --- 核心修改开始 (2/4): 识别目标下拉框并初始化其过滤状态 ---
         const isPresetManagerSelect = originalSelect.id === 'completion_prompt_manager_footer_append_prompt';
         if (isPresetManagerSelect) {
-            // 默认关闭过滤
-            specialFilterState[originalSelect.id] = false; 
-            console.log(`${SCRIPT_NAME}: Detected Preset Manager dropdown. Special commands enabled: /过滤, /取消过滤`);
+            // --- 持久化修改 (2/3): 初始化时从 localStorage 读取状态 ---
+            // localStorage.getItem 返回的是字符串 "true" 或 "false"，所以需要做比较
+            const savedState = localStorage.getItem(PRESET_FILTER_STORAGE_KEY) === 'true';
+            specialFilterState[originalSelect.id] = savedState; 
+            console.log(`${SCRIPT_NAME}: Detected Preset Manager dropdown. Loaded filter state: ${savedState}. Special commands enabled: /过滤, /取消过滤`);
         }
-        // --- 核心修改结束 (2/4) ---
 
 		originalSelect.setAttribute(REPLACED_MARKER, 'true');
 		
@@ -316,7 +316,7 @@
 		const searchInput = window.parent.document.createElement('input');
 		searchInput.className = 'gr-search-input';
 		searchInput.type = 'text';
-		searchInput.placeholder = '搜索或输入命令...'; // 更新提示文本
+		searchInput.placeholder = '搜索或输入命令...';
 		searchBox.appendChild(searchInput);
 		
 		const optionsContainer = window.parent.document.createElement('div');
@@ -349,23 +349,25 @@
 			}
 		}, 200);
 		
-        // --- 核心修改开始 (3/4): 修改搜索框的 input 事件，加入命令处理 ---
 		searchInput.addEventListener('input', (e) => {
 			const searchTerm = e.target.value;
             
-            // 检查是否为预设管理器的特殊命令
             if (isPresetManagerSelect) {
                 if (searchTerm === '/过滤') {
                     specialFilterState[originalSelect.id] = true;
-                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已开启过滤模式。`);
-                    searchInput.value = ''; // 清空输入框
-                    populateOptions();      // 重新填充选项以应用过滤
-                    performSearch('');      // 重置搜索
-                    return; // 阻止后续的普通搜索
+                    // --- 持久化修改 (3/3): 将新状态写入 localStorage ---
+                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'true'); 
+                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已开启过滤模式 (已保存)。`);
+                    searchInput.value = '';
+                    populateOptions();
+                    performSearch('');
+                    return;
                 }
                 if (searchTerm === '/取消过滤') {
                     specialFilterState[originalSelect.id] = false;
-                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已关闭过滤模式。`);
+                    // --- 持久化修改 (3/3): 将新状态写入 localStorage ---
+                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'false');
+                    console.log(`${SCRIPT_NAME}: 预设管理器(${originalSelect.id}) 已关闭过滤模式 (已保存)。`);
                     searchInput.value = '';
                     populateOptions();
                     performSearch('');
@@ -373,7 +375,6 @@
                 }
             }
             
-            // 原有的主题切换命令
 			if (searchTerm === '/切换主题') {
 				toggleTheme();
 				searchInput.value = '';
@@ -383,7 +384,6 @@
 
 			performSearch(searchTerm);
 		});
-        // --- 核心修改结束 (3/4) ---
 		
 		function updateContainerPosition() {
 			if (!window.parent.document.body.contains(originalSelect)) return;
@@ -465,11 +465,9 @@
 				return customOption;
 			};
 
-			// --- 核心修改开始 (4/4): 修改 populateOptions 函数以集成过滤逻辑 ---
             const isFilterActive = isPresetManagerSelect && specialFilterState[originalSelect.id] === true;
 
             if (isFilterActive) {
-                // 如果是预设管理器且过滤已开启
                 const listSelector = '#completion_prompt_manager_list';
                 const listItemSelector = 'li[data-pm-identifier]';
                 const list = window.parent.document.querySelector(listSelector);
@@ -480,19 +478,15 @@
                         const identifier = item.dataset.pmIdentifier;
                         if (identifier) existingIdentifiers.add(identifier);
                     });
-                } else {
-                    console.warn(`${SCRIPT_NAME}: Filter is active, but list '${listSelector}' was not found.`);
                 }
 
                 Array.from(originalSelect.options).forEach(optionNode => {
-                    // 如果选项的值不在已存在的标识符集合中，或者选项没有值（通常是占位符），则创建它
                     if (!optionNode.value || !existingIdentifiers.has(optionNode.value)) {
                         optionsContainer.appendChild(createOptionDiv(optionNode));
                     }
                 });
 
             } else if (isMultiSelectMode) {
-				// 多选模式的逻辑
 				const allOptions = Array.from(originalSelect.options);
 				const selectedOptions = allOptions.filter(opt => opt.selected);
 				
@@ -518,7 +512,6 @@
 				});
 
 			} else if (isWorldInfoSelect && isWorldInfoCachePopulated) {
-				// WorldInfo 的缓存逻辑
 				worldInfoCache.options.forEach(cachedOpt => {
 					const originalOption = Array.from(originalSelect.options).find(opt => opt.value === cachedOpt.value) || {};
 					const fakeOptionNode = {
@@ -529,7 +522,6 @@
 					optionsContainer.appendChild(createOptionDiv(fakeOptionNode));
 				});
 			} else {
-				// 默认的通用逻辑
 				Array.from(originalSelect.children).forEach(child => {
 					if (child.tagName === 'OPTGROUP') {
 						const groupLabel = window.parent.document.createElement('div');
@@ -547,10 +539,8 @@
 					}
 				});
 			}
-			// --- 核心修改结束 (4/4) ---
 			
 			searchBox.style.display = originalSelect.options.length >= 10 ? 'block' : 'none';
-			// 注意：这里我们不再重置 searchInput 的值，因为它可能包含用户正在输入的命令或搜索词
 			performSearch(searchInput.value);
 		}
 		
@@ -597,7 +587,7 @@
 			optionsList.style.maxHeight = `${Math.max(0, maxAvailableHeight)}px`;
 			
 			container.classList.add('open');
-			populateOptions();
+			populateOptions(); // populateOptions is called here again, which is correct.
 			
 			const scrollHandler = (event) => {
 				if (optionsList.contains(event.target)) return;
@@ -637,6 +627,8 @@
 		appendTarget.appendChild(container);
 	}
     
+    // The rest of the functions (startObservingEntriesList, stopObservingEntriesList, toggleTheme, initialize) are unchanged.
+    // ...
     function startObservingEntriesList() {
         if (entriesListObserver) return; 
 
