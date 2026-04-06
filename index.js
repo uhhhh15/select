@@ -2,7 +2,7 @@
     "use strict";
 
     // --- 1. 配置与全局常量 ---
-    const SCRIPT_NAME = '[下拉框美化]';
+    const SCRIPT_NAME = '[下拉选项框美化]';
     const CONTAINER_ID = 'gr-global-dropdown-container';
 
     // 预定义的需要延伸宽度的目标映射
