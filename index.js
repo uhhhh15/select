@@ -116,7 +116,7 @@
         return window.innerWidth <= 768;
     }
 
-    // 智能事件触发器。根据不同的下拉框，使用不同的触发策略
+    // 【终极修复】：智能事件触发器。根据不同的下拉框，使用不同的触发策略
     function smartTriggerChange(selectEl) {
         // 判断是否为世界书高度敏感区域（条目列表或世界书选择器）
         const isWorldInfoSensitive = selectEl.id === 'world_editor_select' || selectEl.closest('#world_popup_entries_list');
@@ -444,7 +444,7 @@
                 if (pinnedUnselected.length > 0) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
-                    pinnedLabel.textContent = '已顶置';
+                    pinnedLabel.textContent = '已固定';
                     optionsContainer.appendChild(pinnedLabel);
                     pinnedUnselected.forEach(opt => {
                         const div = createOptionDiv(opt);
@@ -453,7 +453,7 @@
                 }
             }
 
-            // "其他"分区（仅当存在已顶置选项时才显示）
+            // "其他"分区（仅当存在已固定选项时才显示）
             const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && pinnedValues.includes(opt.value));
             let hasOther = false;
             Array.from(originalSelect.children).forEach(child => {
@@ -573,7 +573,7 @@
                 }
             });
 
-            // 排序：当前选中 → 已顶置 → 其余
+            // 排序：当前选中 → 已固定 → 其余
             const sorted = allOpts.sort((a, b) => {
                 const aRank = a === selectedOpt ? 0 : (pinnedValues.includes(a.value) ? 1 : 2);
                 const bRank = b === selectedOpt ? 0 : (pinnedValues.includes(b.value) ? 1 : 2);
@@ -587,7 +587,7 @@
                 if (rank === 1 && lastRank !== 1) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
-                    pinnedLabel.textContent = '已顶置';
+                    pinnedLabel.textContent = '已固定';
                     optionsContainer.appendChild(pinnedLabel);
                 }
                 if (rank === 2 && lastRank !== 2 && hasPinnedOpts) {
@@ -624,7 +624,7 @@
         let positionSource = originalSelect;
         const select2State = replacedSelect2Displays.get(originalSelect);
         
-        // 如果没有被我们的UI替换，则寻找原生的 Select2 容器作为锚点计算宽度和坐标
+        // 【核心修复：如果没有被我们的UI替换，则寻找原生的 Select2 容器作为锚点计算宽度和坐标】
         if (select2State) {
             positionSource = select2State.displayEl;
             select2State.displayEl.classList.add('gr-display-focus');
@@ -689,7 +689,7 @@
             }
         }
         optionsList.style.maxHeight = `${Math.max(100, maxAvailableHeight)}px`;
-        searchBox.style.display = validOptionCount >= 11 ? 'block' : 'none';
+        searchBox.style.display = validOptionCount >= 10 ? 'block' : 'none';
 
         const parentDialog = originalSelect.closest('dialog');
         const appendTarget = parentDialog || targetDoc().body;
@@ -724,7 +724,7 @@
         window.addEventListener('scroll', scrollHandler, true);
 
         setTimeout(() => {
-            if (!isMobile() && validOptionCount >= 11) {
+            if (!isMobile() && validOptionCount >= 10) {
                 searchInput.focus();
             }
             const selectedItem = optionsContainer.querySelector('.selected');
@@ -752,7 +752,7 @@
 
         // 如果点击的是原生的 select2 容器
         if (!targetSelect && e.target.closest('.select2-container')) {
-            // 如果点的是原生标签上的 "x" 按钮，直接让原生处理删除，不要弹窗！
+            // 【放行删除按钮】：如果点的是原生标签上的 "x" 按钮，直接让原生处理删除，不要弹窗！
             if (e.target.closest('.select2-selection__choice__remove')) {
                 return false;
             }
@@ -778,7 +778,7 @@
 
         if (!targetSelect) return false;
 
-        // 白名单 UI 替换限制
+        // 【核心修改：白名单 UI 替换限制】
         const isMultiSelect = targetSelect.hasAttribute('multiple');
         if (isMultiSelect) {
             // 只替换白名单区域的多选框显示区域 (UI)
