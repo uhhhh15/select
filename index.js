@@ -28,6 +28,10 @@
     // select2 显示区域替换状态
     const replacedSelect2Displays = new Map();
 
+    // 【新增：预设管理器过滤持久化状态】
+    const PRESET_FILTER_STORAGE_KEY = 'gr-preset-filter-enabled';
+    let isPresetFilterEnabled = localStorage.getItem(PRESET_FILTER_STORAGE_KEY) === 'true';
+
     // 顶置功能
     const PINNED_STORAGE_PREFIX = 'gr-pinned-';
     function getPinKey(selectEl) { return PINNED_STORAGE_PREFIX + (selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown')); }
@@ -99,6 +103,8 @@
         .gr-option-pin.pinned:hover { opacity: 1; }
         body.dark-mode .gr-option-pin.pinned { color: #ffb74d; }
         .gr-option.has-pin { padding-right: 26px !important; }
+        .gr-filter-toggle { border: 1px dashed #42a5f5 !important; background-color: #f8fbff !important; text-align: center; }
+        body.dark-mode .gr-filter-toggle { border: 1px dashed rgba(216, 168, 231, 0.6) !important; background-color: rgba(216, 168, 231, 0.1) !important; }
     `;
 
     // --- 3. 工具函数 ---
@@ -116,22 +122,18 @@
         return window.innerWidth <= 768;
     }
 
-    // 【终极修复】：智能事件触发器。根据不同的下拉框，使用不同的触发策略
     function smartTriggerChange(selectEl) {
-        // 判断是否为世界书高度敏感区域（条目列表或世界书选择器）
         const isWorldInfoSensitive = selectEl.id === 'world_editor_select' || selectEl.closest('#world_popup_entries_list');
 
         if (isWorldInfoSensitive) {
-            // 敏感区域：只触发单一事件，杜绝 SillyTavern 重复渲染条目的 BUG
             if (window.jQuery) {
                 window.jQuery(selectEl).trigger('change');
             } else {
                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
             }
         } else {
-            // 普通区域（如 WIMultiSelector 多选框）：必须原生+jQuery双重轰炸，防止丢属性和共存 BUG
             selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-            selectEl.dispatchEvent(new Event('input', { bubbles: true })); // 补充原生 input
+            selectEl.dispatchEvent(new Event('input', { bubbles: true })); 
             if (window.jQuery) window.jQuery(selectEl).trigger('change');
         }
     }
@@ -192,7 +194,6 @@
                 e.preventDefault();
                 e.stopPropagation();
                 option.selected = false;
-                // 【使用智能分流触发】
                 smartTriggerChange(hiddenSelect);
                 refreshSelect2Chips(hiddenSelect, state);
                 syncDropdownFromChips(hiddenSelect);
@@ -276,6 +277,7 @@
             originalSelect.multiple = true;
         }
         const isWorldInfoSelect = originalSelect.name === '$' && originalSelect.closest('#world_popup_entries_list');
+        const isPresetManagerSelect = originalSelect.id === 'completion_prompt_manager_footer_append_prompt';
 
         originalSelect.style.outline = 'none';
         
@@ -299,13 +301,13 @@
         const searchInput = targetDoc().createElement('input');
         searchInput.className = 'gr-search-input';
         searchInput.type = 'text';
-        searchInput.placeholder = '搜索选项...';
+        searchInput.placeholder = isPresetManagerSelect ? '搜索 或输入 /过滤' : '搜索选项...';
         searchBox.appendChild(searchInput);
         
         const optionsContainer = targetDoc().createElement('div');
         optionsContainer.className = 'gr-options-container';
 
-        // 主题切换选项
+        // 1. 主题切换选项（隐藏状态）
         const themeToggleOption = targetDoc().createElement('div');
         themeToggleOption.className = 'gr-option gr-theme-toggle';
         themeToggleOption.style.display = 'none';
@@ -321,7 +323,27 @@
         };
         themeToggleOption.addEventListener('mousedown', (e) => { if (e.button === 0) handleThemeToggle(e); });
         themeToggleOption.addEventListener('touchend', (e) => { if (!isTouchScrolling) handleThemeToggle(e); });
-        optionsContainer.insertBefore(themeToggleOption, optionsContainer.firstChild);
+        optionsContainer.appendChild(themeToggleOption);
+
+        // 2. 【新增】预设管理器过滤切换选项（隐藏状态，等待输入触发）
+        let filterToggleOption = null;
+        if (isPresetManagerSelect) {
+            filterToggleOption = targetDoc().createElement('div');
+            filterToggleOption.className = 'gr-option gr-filter-toggle';
+            filterToggleOption.style.display = 'none';
+            filterToggleOption.textContent = isPresetFilterEnabled ? '🪄 点击取消过滤 (当前: 已隐藏面板里存在的项)' : '🪄 点击开启过滤 (当前: 正在显示全部项)';
+            const handleFilterToggle = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                isPresetFilterEnabled = !isPresetFilterEnabled;
+                localStorage.setItem(PRESET_FILTER_STORAGE_KEY, isPresetFilterEnabled ? 'true' : 'false');
+                closeDropdown();
+                openDropdown(originalSelect); // 重载列表
+            };
+            filterToggleOption.addEventListener('mousedown', (e) => { if (e.button === 0) handleFilterToggle(e); });
+            filterToggleOption.addEventListener('touchend', (e) => { if (!isTouchScrolling) handleFilterToggle(e); });
+            optionsContainer.appendChild(filterToggleOption);
+        }
 
         const THEME_CMD = '/切换主题';
         const performSearch = debounce((searchTerm) => {
@@ -331,7 +353,7 @@
             const groups = optionsContainer.querySelectorAll('.gr-group-label');
             groups.forEach(g => g.dataset.hasVisibleChild = 'false');
 
-            optionsContainer.querySelectorAll('.gr-option:not(.gr-theme-toggle)').forEach(option => {
+            optionsContainer.querySelectorAll('.gr-option:not(.gr-theme-toggle):not(.gr-filter-toggle)').forEach(option => {
                 const isVisible = option.textContent.toLowerCase().includes(searchTerm);
                 option.classList.toggle('hidden', !isVisible);
                 if (isVisible) {
@@ -345,12 +367,22 @@
                 group.style.display = (searchTerm && group.dataset.hasVisibleChild === 'false') ? 'none' : 'block';
             });
 
-            // 主题切换选项：输入为命令前缀时显示
+            // 主题切换命令显示逻辑
             if (searchTerm.length > 0 && THEME_CMD.startsWith(searchTerm)) {
                 themeToggleOption.style.display = '';
                 hasVisible = true;
             } else {
                 themeToggleOption.style.display = 'none';
+            }
+
+            // 【新增】过滤命令显示逻辑
+            if (filterToggleOption) {
+                if (searchTerm.length > 0 && ('/过滤'.startsWith(searchTerm) || '/取消过滤'.startsWith(searchTerm))) {
+                    filterToggleOption.style.display = '';
+                    hasVisible = true;
+                } else {
+                    filterToggleOption.style.display = 'none';
+                }
             }
 
             let noResultsMsg = optionsContainer.querySelector('.gr-no-results');
@@ -374,12 +406,45 @@
         }
 
         searchInput.addEventListener('input', (e) => {
-            performSearch(e.target.value);
+            const val = e.target.value;
+            // 【完全打出命令时直接执行，兼顾老用户习惯】
+            if (isPresetManagerSelect) {
+                if (val === '/过滤') {
+                    isPresetFilterEnabled = true;
+                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'true');
+                    closeDropdown(); openDropdown(originalSelect); return;
+                } else if (val === '/取消过滤') {
+                    isPresetFilterEnabled = false;
+                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'false');
+                    closeDropdown(); openDropdown(originalSelect); return;
+                }
+            }
+            performSearch(val);
         });
+
+        // 【新增】获取预设管理器当前已经在面板里的项（用于过滤逻辑）
+        const existingIdentifiers = new Set();
+        if (isPresetManagerSelect && isPresetFilterEnabled) {
+            const listSelector = '#completion_prompt_manager_list';
+            const listItemSelector = 'li[data-pm-identifier]';
+            const list = targetDoc().querySelector(listSelector);
+            if (list) {
+                list.querySelectorAll(listItemSelector).forEach(item => {
+                    if (item.dataset.pmIdentifier) existingIdentifiers.add(item.dataset.pmIdentifier);
+                });
+            }
+        }
 
         let validOptionCount = 0;
         const createOptionDiv = (optionNode) => {
             if (optionNode.style && optionNode.style.display === 'none') return null;
+            
+            // 【核心注入：如果开启了过滤并且这个项已经存在面板里，就直接跳过不生成 DOM】
+            if (isPresetManagerSelect && isPresetFilterEnabled) {
+                if (optionNode.value && existingIdentifiers.has(optionNode.value)) {
+                    return null;
+                }
+            }
             
             validOptionCount++;
             const customOption = targetDoc().createElement('div');
@@ -389,7 +454,7 @@
             
             if (optionNode.selected) customOption.classList.add('selected');
 
-            // 顶置图标（仅对启用了顶置功能的下拉框）
+            // 顶置图标
             if (isPinEnabled(originalSelect)) {
                 customOption.classList.add('has-pin');
                 const pinnedValues = getPinnedValues(originalSelect);
@@ -412,12 +477,10 @@
                     if (originalOption) {
                         originalOption.selected = !originalOption.selected;
                         customOption.classList.toggle('selected');
-                        // 【使用智能分流触发】
                         smartTriggerChange(originalSelect);
                     }
                 } else {
                     originalSelect.value = customOption.dataset.value;
-                    // 【使用智能分流触发】
                     smartTriggerChange(originalSelect);
                     closeDropdown();
                 }
@@ -453,7 +516,7 @@
                 }
             }
 
-            // "其他"分区（仅当存在已固定选项时才显示）
+            // "其他"分区
             const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && pinnedValues.includes(opt.value));
             let hasOther = false;
             Array.from(originalSelect.children).forEach(child => {
@@ -492,14 +555,9 @@
                 { priority: 5, label: null },
             ];
 
-            // 尝试从 parent window（iframe 场景）或当前 window 获取世界书 API
             const resolveApiFn = (name) => {
-                try {
-                    if (typeof window.parent?.[name] === 'function') return window.parent[name];
-                } catch (_) {}
-                try {
-                    if (typeof window[name] === 'function') return window[name];
-                } catch (_) {}
+                try { if (typeof window.parent?.[name] === 'function') return window.parent[name]; } catch (_) {}
+                try { if (typeof window[name] === 'function') return window[name]; } catch (_) {}
                 return null;
             };
             const _getGlobalWbNames = resolveApiFn('getGlobalWorldbookNames');
@@ -525,9 +583,7 @@
                         const chatWb = _getChatWbName('current');
                         if (chatWb && chatWb.trim() === text) return 4;
                     }
-                } catch (e) {
-                    console.warn(`${SCRIPT_NAME} 世界书分类失败:`, e);
-                }
+                } catch (e) { console.warn(`${SCRIPT_NAME} 世界书分类失败:`, e); }
                 return 5;
             }
 
@@ -573,7 +629,6 @@
                 }
             });
 
-            // 排序：当前选中 → 已固定 → 其余
             const sorted = allOpts.sort((a, b) => {
                 const aRank = a === selectedOpt ? 0 : (pinnedValues.includes(a.value) ? 1 : 2);
                 const bRank = b === selectedOpt ? 0 : (pinnedValues.includes(b.value) ? 1 : 2);
@@ -624,7 +679,6 @@
         let positionSource = originalSelect;
         const select2State = replacedSelect2Displays.get(originalSelect);
         
-        // 【核心修复：如果没有被我们的UI替换，则寻找原生的 Select2 容器作为锚点计算宽度和坐标】
         if (select2State) {
             positionSource = select2State.displayEl;
             select2State.displayEl.classList.add('gr-display-focus');
@@ -659,7 +713,7 @@
         const TOP_BOUNDARY_ID = 'top-settings-holder';
         const BOTTOM_BOUNDARY_ID = 'send_form';
         const BOUNDARY_MARGIN = 10;
-        const originalSelectRect = positionSource.getBoundingClientRect(); // 基于视觉实际元素计算
+        const originalSelectRect = positionSource.getBoundingClientRect(); 
         const topBoundaryEl = targetDoc().getElementById(TOP_BOUNDARY_ID);
         const bottomBoundaryEl = targetDoc().getElementById(BOTTOM_BOUNDARY_ID);
         let maxAvailableHeight;
@@ -689,7 +743,7 @@
             }
         }
         optionsList.style.maxHeight = `${Math.max(100, maxAvailableHeight)}px`;
-        searchBox.style.display = validOptionCount >= 10 ? 'block' : 'none';
+        searchBox.style.display = validOptionCount >= 10 || isPresetManagerSelect ? 'block' : 'none';
 
         const parentDialog = originalSelect.closest('dialog');
         const appendTarget = parentDialog || targetDoc().body;
@@ -724,7 +778,7 @@
         window.addEventListener('scroll', scrollHandler, true);
 
         setTimeout(() => {
-            if (!isMobile() && validOptionCount >= 10) {
+            if (!isMobile() && (validOptionCount >= 10 || isPresetManagerSelect)) {
                 searchInput.focus();
             }
             const selectedItem = optionsContainer.querySelector('.selected');
@@ -750,13 +804,10 @@
     function handleSelectTrigger(e, forceReplace = false) {
         let targetSelect = e.target.closest('select:not([multiple])') || e.target.closest('select[multiple]');
 
-        // 如果点击的是原生的 select2 容器
         if (!targetSelect && e.target.closest('.select2-container')) {
-            // 【放行删除按钮】：如果点的是原生标签上的 "x" 按钮，直接让原生处理删除，不要弹窗！
             if (e.target.closest('.select2-selection__choice__remove')) {
                 return false;
             }
-            
             const select2Element = e.target.closest('.select2-container');
             const select2Id = select2Element.getAttribute('data-select2-id') || select2Element.id?.replace('select2-', '');
             if (select2Id) {
@@ -765,7 +816,6 @@
             }
         }
 
-        // 如果点击的是我们的自定义容器
         if (!targetSelect && e.target.closest('.gr-select2-display')) {
             if (e.target.closest('.gr-select2-chip-remove')) return false;
             const displayEl = e.target.closest('.gr-select2-display');
@@ -778,16 +828,13 @@
 
         if (!targetSelect) return false;
 
-        // 【核心修改：白名单 UI 替换限制】
         const isMultiSelect = targetSelect.hasAttribute('multiple');
         if (isMultiSelect) {
-            // 只替换白名单区域的多选框显示区域 (UI)
             if (targetSelect.closest('#WIMultiSelector .range-block-range')) {
                 if (!replacedSelect2Displays.has(targetSelect)) {
                     replaceSelect2Display(targetSelect);
                 }
             }
-            // 【极其重要】：这里不再有 return false。所有的多选框都会顺畅流向后面的代码，呼出我们的悬浮列表！
         }
 
         if (!checkExemptionRules(targetSelect, forceReplace)) return false;
@@ -795,7 +842,6 @@
         e.preventDefault();
         e.stopPropagation();
 
-        // 强行关闭原生的 Select2 悬浮列表，防止双重弹窗
         if (window.jQuery && window.jQuery(targetSelect).data('select2')) {
             setTimeout(() => window.jQuery(targetSelect).select2('close'), 0);
         }
@@ -893,7 +939,6 @@
         }
 
         function scanAndReplaceSelect2Displays() {
-            // 只给白名单里的多选框换皮
             const targetMultiSelects = targetDoc().querySelectorAll('#WIMultiSelector .range-block-range select[multiple]');
             targetMultiSelects.forEach(sel => {
                 if (replacedSelect2Displays.has(sel)) return;
