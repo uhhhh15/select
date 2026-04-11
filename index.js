@@ -937,9 +937,37 @@
             handleSelectTrigger(e);
         }, true);
 
+        // --- 修复手机端滑动误触的逻辑 ---
+        let globalTouchStartX = 0;
+        let globalTouchStartY = 0;
+        let isGlobalTouchScrolling = false;
+
         targetDoc().addEventListener('touchstart', (e) => {
-            handleSelectTrigger(e);
+            if (e.touches && e.touches.length > 0) {
+                globalTouchStartX = e.touches[0].clientX;
+                globalTouchStartY = e.touches[0].clientY;
+            }
+            isGlobalTouchScrolling = false; // 初始假设不是滑动
+        }, { passive: true, capture: true });
+
+        targetDoc().addEventListener('touchmove', (e) => {
+            if (e.touches && e.touches.length > 0) {
+                const moveX = Math.abs(e.touches[0].clientX - globalTouchStartX);
+                const moveY = Math.abs(e.touches[0].clientY - globalTouchStartY);
+                // 容差值设为 10 像素。如果手指移动超过 10 像素，则判定为滑动屏幕
+                if (moveX > 10 || moveY > 10) {
+                    isGlobalTouchScrolling = true;
+                }
+            }
+        }, { passive: true, capture: true });
+
+        targetDoc().addEventListener('touchend', (e) => {
+            // 只有当手指没有发生明显滑动时（即真正的点击），才触发下拉框
+            if (!isGlobalTouchScrolling) {
+                handleSelectTrigger(e);
+            }
         }, { passive: false, capture: true });
+        // --- 修复结束 ---
 
         targetDoc().addEventListener('keydown', (e) => {
             if (e.key === ' ' || e.key === 'Enter') {
