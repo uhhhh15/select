@@ -123,14 +123,18 @@
     }
 
 	function smartTriggerChange(selectEl) {
-        // SillyTavern 的世界书 (WorldInfo) 及大部分表单依赖 'input' 事件进行自动保存
-        selectEl.dispatchEvent(new Event('input', { bubbles: true }));
-        selectEl.dispatchEvent(new Event('change', { bubbles: true })); 
-        
-        // 兼容 jQuery 绑定的事件监听器
-        if (window.jQuery) {
-            window.jQuery(selectEl).trigger('input');
-            window.jQuery(selectEl).trigger('change');
+        // 绝不能同时使用 dispatchEvent 和 jQuery.trigger！
+        // 因为 jQuery 会自动捕获原生 dispatchEvent，双重触发会导致酒馆底层的各种监听器执行两次，
+        // 进而引发类似 #world_editor_select 列表被追加两遍、重复渲染的严重 Bug。
+
+        if (selectEl.id === 'world_editor_select') {
+            // 世界书主切换器：只发 change 事件，千万别发 input
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        } 
+        else {
+            // 其他常规表单（如：世界书条目的状态、位置等下拉框）：必须同时发 input 和 change 激活底层自动保存
+            selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+            selectEl.dispatchEvent(new Event('change', { bubbles: true })); 
         }
     }
 
