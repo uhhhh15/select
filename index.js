@@ -4,6 +4,91 @@
     // --- 1. 配置与全局常量 ---
     const SCRIPT_NAME = '[下拉选项框美化]';
     const CONTAINER_ID = 'gr-global-dropdown-container';
+    const STORAGE_KEY = '[酒馆]酒馆助手脚本-下拉选项框美化';
+
+    // 统一存储管理
+    const Storage = {
+        data: null,
+        init() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                this.data = raw ? JSON.parse(raw) : { settings: {}, pinned: {}, meta: {} };
+                // 迁移旧数据
+                this.migrateOldStorage();
+            } catch { this.data = { settings: {}, pinned: {}, meta: {} }; }
+        },
+        migrateOldStorage() {
+            // 迁移 dark mode
+            const oldDarkMode = localStorage.getItem('gr-dark-mode');
+            if (oldDarkMode !== null && !this.data.settings.hasOwnProperty('darkMode')) {
+                this.data.settings.darkMode = oldDarkMode === 'true';
+                localStorage.removeItem('gr-dark-mode');
+            }
+            // 迁移 preset filter
+            const oldPresetFilter = localStorage.getItem('gr-preset-filter-enabled');
+            if (oldPresetFilter !== null && !this.data.settings.hasOwnProperty('presetFilterEnabled')) {
+                this.data.settings.presetFilterEnabled = oldPresetFilter === 'true';
+                localStorage.removeItem('gr-preset-filter-enabled');
+            }
+            // 迁移 sort top
+            const oldSortTop = localStorage.getItem('gr-sort-selected-top');
+            if (oldSortTop !== null && !this.data.settings.hasOwnProperty('sortSelectedToTop')) {
+                this.data.settings.sortSelectedToTop = oldSortTop === 'true';
+                localStorage.removeItem('gr-sort-selected-top');
+            }
+            // 迁移 pinned 数据
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('gr-pinned-')) {
+                    const selectId = key.replace('gr-pinned-', '');
+                    if (!this.data.pinned[selectId]) {
+                        try {
+                            this.data.pinned[selectId] = JSON.parse(localStorage.getItem(key) || '[]');
+                            localStorage.removeItem(key);
+                        } catch { }
+                    }
+                }
+            }
+            // 迁移 welcome popup
+            const oldWelcome = localStorage.getItem('gr-welcome-popup-2026-4-19');
+            if (oldWelcome !== null && !this.data.meta.hasOwnProperty('welcomePopupShown')) {
+                this.data.meta.welcomePopupShown = oldWelcome === 'true';
+                localStorage.removeItem('gr-welcome-popup-2026-4-19');
+            }
+            this.save();
+        },
+        save() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+        },
+        getSetting(key, defaultValue = null) {
+            if (!this.data) this.init();
+            return this.data.settings.hasOwnProperty(key) ? this.data.settings[key] : defaultValue;
+        },
+        setSetting(key, value) {
+            if (!this.data) this.init();
+            this.data.settings[key] = value;
+            this.save();
+        },
+        getPinned(selectId) {
+            if (!this.data) this.init();
+            return this.data.pinned[selectId] || [];
+        },
+        setPinned(selectId, values) {
+            if (!this.data) this.init();
+            this.data.pinned[selectId] = values;
+            this.save();
+        },
+        getMeta(key, defaultValue = null) {
+            if (!this.data) this.init();
+            return this.data.meta.hasOwnProperty(key) ? this.data.meta[key] : defaultValue;
+        },
+        setMeta(key, value) {
+            if (!this.data) this.init();
+            this.data.meta[key] = value;
+            this.save();
+        }
+    };
+    Storage.init();
 
     // 预定义的需要延伸宽度的目标映射
     const WIDTH_TARGETS = {
@@ -20,7 +105,7 @@
     let entriesListObserver = null;
 
     // 主题状态
-    let isDarkMode = localStorage.getItem('gr-dark-mode') === 'true';
+    let isDarkMode = Storage.getSetting('darkMode', false);
 
     // 滚动监听器清理队列
     let activeScrollListeners = [];
@@ -29,14 +114,14 @@
     const replacedSelect2Displays = new Map();
 
     // 【预设管理器过滤持久化状态】
-    const PRESET_FILTER_STORAGE_KEY = 'gr-preset-filter-enabled';
-    let isPresetFilterEnabled = localStorage.getItem(PRESET_FILTER_STORAGE_KEY) === 'true';
+    let isPresetFilterEnabled = Storage.getSetting('presetFilterEnabled', false);
+
+    // 【选中项是否置顶持久化状态】
+    let isSortSelectedToTop = Storage.getSetting('sortSelectedToTop', false); // 默认关闭
 
     // 顶置功能
-    const PINNED_STORAGE_PREFIX = 'gr-pinned-';
-    function getPinKey(selectEl) { return PINNED_STORAGE_PREFIX + (selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown')); }
-    function getPinnedValues(selectEl) { try { return JSON.parse(localStorage.getItem(getPinKey(selectEl)) || '[]'); } catch { return []; } }
-    function togglePinnedValue(selectEl, value) { const p = getPinnedValues(selectEl); const i = p.indexOf(value); if (i >= 0) p.splice(i, 1); else p.push(value); localStorage.setItem(getPinKey(selectEl), JSON.stringify(p)); return p; }
+    function getPinnedValues(selectEl) { return Storage.getPinned(selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown')); }
+    function togglePinnedValue(selectEl, value) { const key = selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown'); const p = getPinnedValues(selectEl); const i = p.indexOf(value); if (i >= 0) p.splice(i, 1); else p.push(value); Storage.setPinned(key, p); return p; }
     function isPinEnabled(selectEl) { if (!selectEl) return false; if (selectEl.id === 'themes') return true; if (selectEl.id === 'settings_preset_openai') return true; if (selectEl.closest('#WIMultiSelector .range-block-range')) return true; return false; }
 
     // --- 2. 注入样式 ---
@@ -123,16 +208,10 @@
     }
 
 	function smartTriggerChange(selectEl) {
-        // 绝不能同时使用 dispatchEvent 和 jQuery.trigger！
-        // 因为 jQuery 会自动捕获原生 dispatchEvent，双重触发会导致酒馆底层的各种监听器执行两次，
-        // 进而引发类似 #world_editor_select 列表被追加两遍、重复渲染的严重 Bug。
-
         if (selectEl.id === 'world_editor_select') {
-            // 世界书主切换器：只发 change 事件，千万别发 input
             selectEl.dispatchEvent(new Event('change', { bubbles: true }));
         } 
         else {
-            // 其他常规表单（如：世界书条目的状态、位置等下拉框）：必须同时发 input 和 change 激活底层自动保存
             selectEl.dispatchEvent(new Event('input', { bubbles: true }));
             selectEl.dispatchEvent(new Event('change', { bubbles: true })); 
         }
@@ -151,7 +230,7 @@
 
     function toggleTheme() {
         isDarkMode = !isDarkMode;
-        localStorage.setItem('gr-dark-mode', isDarkMode);
+        Storage.setSetting('darkMode', isDarkMode);
         if (isDarkMode) targetDoc().body.classList.add('dark-mode');
         else targetDoc().body.classList.remove('dark-mode');
     }
@@ -313,8 +392,7 @@
         themeToggleOption.style.display = 'none';
         themeToggleOption.textContent = isDarkMode ? '切换到白天主题' : '切换到黑夜主题';
         const handleThemeToggle = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            e.preventDefault(); e.stopPropagation();
             toggleTheme();
             themeToggleOption.textContent = isDarkMode ? '切换到白天主题' : '切换到黑夜主题';
             themeToggleOption.style.display = 'none';
@@ -325,7 +403,7 @@
         themeToggleOption.addEventListener('touchend', (e) => { if (!isTouchScrolling) handleThemeToggle(e); });
         optionsContainer.appendChild(themeToggleOption);
 
-        // 2. 【新增】预设管理器过滤切换选项（隐藏状态，等待输入触发）
+        // 2. 预设管理器过滤切换选项（隐藏状态）
         let filterToggleOption = null;
         if (isPresetManagerSelect) {
             filterToggleOption = targetDoc().createElement('div');
@@ -333,17 +411,30 @@
             filterToggleOption.style.display = 'none';
             filterToggleOption.textContent = isPresetFilterEnabled ? '🪄 点击取消过滤 (当前: 已隐藏面板里存在的项)' : '🪄 点击开启过滤 (当前: 正在显示全部项)';
             const handleFilterToggle = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
                 isPresetFilterEnabled = !isPresetFilterEnabled;
-                localStorage.setItem(PRESET_FILTER_STORAGE_KEY, isPresetFilterEnabled ? 'true' : 'false');
-                closeDropdown();
-                openDropdown(originalSelect); // 重载列表
+                Storage.setSetting('presetFilterEnabled', isPresetFilterEnabled);
+                closeDropdown(); openDropdown(originalSelect);
             };
             filterToggleOption.addEventListener('mousedown', (e) => { if (e.button === 0) handleFilterToggle(e); });
             filterToggleOption.addEventListener('touchend', (e) => { if (!isTouchScrolling) handleFilterToggle(e); });
             optionsContainer.appendChild(filterToggleOption);
         }
+
+        // 3. 是否开启"选中项强制置顶"切换选项
+        const sortToggleOption = targetDoc().createElement('div');
+        sortToggleOption.className = 'gr-option gr-filter-toggle';
+        sortToggleOption.style.display = 'none';
+        sortToggleOption.textContent = isSortSelectedToTop ? '📌 点击关闭: 选中项置顶 (恢复选项原始排序)' : '📌 点击开启: 选中项强制排在最顶端';
+        const handleSortToggle = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            isSortSelectedToTop = !isSortSelectedToTop;
+            Storage.setSetting('sortSelectedToTop', isSortSelectedToTop);
+            closeDropdown(); openDropdown(originalSelect); // 重载列表
+        };
+        sortToggleOption.addEventListener('mousedown', (e) => { if (e.button === 0) handleSortToggle(e); });
+        sortToggleOption.addEventListener('touchend', (e) => { if (!isTouchScrolling) handleSortToggle(e); });
+        optionsContainer.appendChild(sortToggleOption);
 
         const THEME_CMD = '/切换主题';
         const performSearch = debounce((originalSearchTerm) => {
@@ -367,16 +458,12 @@
                 group.style.display = (searchTerm && group.dataset.hasVisibleChild === 'false') ? 'none' : 'block';
             });
 
-            // --- [新增] 动态创建新标签逻辑 ---
+            // 动态创建新标签逻辑
             let createNewOptionDiv = optionsContainer.querySelector('.gr-create-new-option');
-
-            // 判断当前下拉框是否支持打字输入（如世界书关键词、角色过滤等）
             const isTaggableSelect = originalSelect.classList.contains('keyselect') ||
                                      originalSelect.name === 'characterFilter' ||
                                      originalSelect.name === 'key' ||
                                      originalSelect.name === 'keysecondary';
-
-            // 检查当前输入是否完全匹配已有项
             const exactMatchExists = Array.from(originalSelect.options).some(opt => opt.value.toLowerCase() === searchTerm || opt.textContent.toLowerCase() === searchTerm);
 
             if (isTaggableSelect && originalSearchTerm.trim() !== '' && !exactMatchExists) {
@@ -392,17 +479,10 @@
                         e.preventDefault(); e.stopPropagation();
                         const newVal = searchInput.value.trim();
                         if (!newVal) return;
-
-                        // 核心：动态生成新的 Option 插入到原生的多选框中
                         const newOpt = new Option(newVal, newVal, true, true);
                         originalSelect.appendChild(newOpt);
-
-                        // 触发保存和UI更新
                         smartTriggerChange(originalSelect);
-
-                        // 创建后重载当前下拉列表
-                        closeDropdown();
-                        openDropdown(originalSelect);
+                        closeDropdown(); openDropdown(originalSelect);
                     };
 
                     createNewOptionDiv.addEventListener('mousedown', handleCreate);
@@ -416,24 +496,22 @@
             } else if (createNewOptionDiv) {
                 createNewOptionDiv.style.display = 'none';
             }
-            // --- [新增结束] ---
 
-            // 主题切换与过滤命令逻辑
+            // 命令触发器
             if (searchTerm.length > 0 && THEME_CMD.startsWith(searchTerm)) {
-                themeToggleOption.style.display = '';
-                hasVisible = true;
-            } else {
-                themeToggleOption.style.display = 'none';
-            }
+                themeToggleOption.style.display = ''; hasVisible = true;
+            } else { themeToggleOption.style.display = 'none'; }
 
             if (filterToggleOption) {
                 if (searchTerm.length > 0 && ('/过滤'.startsWith(searchTerm) || '/取消过滤'.startsWith(searchTerm))) {
-                    filterToggleOption.style.display = '';
-                    hasVisible = true;
-                } else {
-                    filterToggleOption.style.display = 'none';
-                }
+                    filterToggleOption.style.display = ''; hasVisible = true;
+                } else { filterToggleOption.style.display = 'none'; }
             }
+
+            // 【新增】置顶/排序功能触发器
+            if (searchTerm.length > 0 && ('/排序'.startsWith(searchTerm) || '/置顶'.startsWith(searchTerm))) {
+                sortToggleOption.style.display = ''; hasVisible = true;
+            } else { sortToggleOption.style.display = 'none'; }
 
             let noResultsMsg = optionsContainer.querySelector('.gr-no-results');
             if (!hasVisible && !noResultsMsg) {
@@ -457,22 +535,19 @@
 
         searchInput.addEventListener('input', (e) => {
             const val = e.target.value;
-            // 【完全打出命令时直接执行，兼顾老用户习惯】
             if (isPresetManagerSelect) {
-                if (val === '/过滤') {
-                    isPresetFilterEnabled = true;
-                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'true');
-                    closeDropdown(); openDropdown(originalSelect); return;
-                } else if (val === '/取消过滤') {
-                    isPresetFilterEnabled = false;
-                    localStorage.setItem(PRESET_FILTER_STORAGE_KEY, 'false');
-                    closeDropdown(); openDropdown(originalSelect); return;
-                }
+                if (val === '/过滤') { isPresetFilterEnabled = true; Storage.setSetting('presetFilterEnabled', true); closeDropdown(); openDropdown(originalSelect); return; }
+                else if (val === '/取消过滤') { isPresetFilterEnabled = false; Storage.setSetting('presetFilterEnabled', false); closeDropdown(); openDropdown(originalSelect); return; }
+            }
+            // 兼容快捷敲击直接执行命令
+            if (val === '/排序' || val === '/置顶') {
+                isSortSelectedToTop = !isSortSelectedToTop;
+                Storage.setSetting('sortSelectedToTop', isSortSelectedToTop);
+                closeDropdown(); openDropdown(originalSelect); return;
             }
             performSearch(val);
         });
 
-        // 监听回车键，快速触发创建标签
         searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 const createBtn = optionsContainer.querySelector('.gr-create-new-option');
@@ -483,7 +558,6 @@
             }
         });
 
-        // 【新增】获取预设管理器当前已经在面板里的项（用于过滤逻辑）
         const existingIdentifiers = new Set();
         if (isPresetManagerSelect && isPresetFilterEnabled) {
             const listSelector = '#completion_prompt_manager_list';
@@ -500,7 +574,6 @@
         const createOptionDiv = (optionNode) => {
             if (optionNode.style && optionNode.style.display === 'none') return null;
             
-            // 【核心注入：如果开启了过滤并且这个项已经存在面板里，就直接跳过不生成 DOM】
             if (isPresetManagerSelect && isPresetFilterEnabled) {
                 if (optionNode.value && existingIdentifiers.has(optionNode.value)) {
                     return null;
@@ -515,7 +588,6 @@
             
             if (optionNode.selected) customOption.classList.add('selected');
 
-            // 顶置图标
             if (isPinEnabled(originalSelect)) {
                 customOption.classList.add('has-pin');
                 const pinnedValues = getPinnedValues(originalSelect);
@@ -549,29 +621,62 @@
             
             customOption.addEventListener('mousedown', (e) => { if (e.button === 0) { e.preventDefault(); handleSelect(e); }});
             customOption.addEventListener('touchend', (e) => { 
-				if (!isTouchScrolling) { 
-					e.preventDefault(); 
-					// 稍微加一点延时，防止滑动惯性误判
-					setTimeout(() => handleSelect(e), 50); 
-				}
+				if (!isTouchScrolling) { e.preventDefault(); setTimeout(() => handleSelect(e), 50); }
 			});
             return customOption;
         };
 
         if (isMultiSelectMode) {
             const allOptions = Array.from(originalSelect.options);
-            const selectedOptions = allOptions.filter(opt => opt.selected);
             const pinnedValues = isPinEnabled(originalSelect) ? getPinnedValues(originalSelect) : [];
 
-            selectedOptions.forEach(opt => {
-                const div = createOptionDiv(opt);
-                if(div) optionsContainer.appendChild(div);
-            });
+            // 【适配置顶开关逻辑】
+            if (isSortSelectedToTop) {
+                const selectedOptions = allOptions.filter(opt => opt.selected);
+                selectedOptions.forEach(opt => {
+                    const div = createOptionDiv(opt);
+                    if(div) optionsContainer.appendChild(div);
+                });
 
-            // 顶置的未选中选项
-            if (pinnedValues.length > 0) {
-                const pinnedUnselected = allOptions.filter(opt => !opt.selected && pinnedValues.includes(opt.value));
-                if (pinnedUnselected.length > 0) {
+                if (pinnedValues.length > 0) {
+                    const pinnedUnselected = allOptions.filter(opt => !opt.selected && pinnedValues.includes(opt.value));
+                    if (pinnedUnselected.length > 0) {
+                        const pinnedLabel = targetDoc().createElement('div');
+                        pinnedLabel.className = 'gr-group-label';
+                        pinnedLabel.textContent = '已固定';
+                        optionsContainer.appendChild(pinnedLabel);
+                        pinnedUnselected.forEach(opt => {
+                            const div = createOptionDiv(opt);
+                            if(div) optionsContainer.appendChild(div);
+                        });
+                    }
+                }
+
+                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && pinnedValues.includes(opt.value));
+                let hasOther = false;
+                Array.from(originalSelect.children).forEach(child => {
+                    if (child.tagName === 'OPTGROUP') {
+                        const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected && !pinnedValues.includes(opt.value));
+                        if (unselectedChildren.length > 0) {
+                            if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
+                            const groupLabel = targetDoc().createElement('div');
+                            groupLabel.textContent = child.label;
+                            optionsContainer.appendChild(groupLabel);
+                            unselectedChildren.forEach(opt => {
+                                const div = createOptionDiv(opt);
+                                if(div) optionsContainer.appendChild(div);
+                            });
+                        }
+                    } else if (child.tagName === 'OPTION' && !child.selected && !pinnedValues.includes(child.value)) {
+                        if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
+                        const div = createOptionDiv(child);
+                        if(div) optionsContainer.appendChild(div);
+                    }
+                });
+            } else {
+                // 如果关闭了强制置顶，则按原样排序输出（保持 Pinned 优先权体验）
+                const pinnedUnselected = allOptions.filter(opt => pinnedValues.includes(opt.value));
+                if (pinnedValues.length > 0 && pinnedUnselected.length > 0) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
                     pinnedLabel.textContent = '已固定';
@@ -581,30 +686,22 @@
                         if(div) optionsContainer.appendChild(div);
                     });
                 }
-            }
-
-            // "其他"分区
-            const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && pinnedValues.includes(opt.value));
-            let hasOther = false;
-            Array.from(originalSelect.children).forEach(child => {
-                if (child.tagName === 'OPTGROUP') {
-                    const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected && !pinnedValues.includes(opt.value));
-                    if (unselectedChildren.length > 0) {
-                        if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
-                        const groupLabel = targetDoc().createElement('div');
-                        groupLabel.textContent = child.label;
-                        optionsContainer.appendChild(groupLabel);
-                        unselectedChildren.forEach(opt => {
-                            const div = createOptionDiv(opt);
-                            if(div) optionsContainer.appendChild(div);
-                        });
+                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => pinnedValues.includes(opt.value));
+                let hasOther = false;
+                Array.from(originalSelect.children).forEach(child => {
+                    if (child.tagName === 'OPTGROUP') {
+                        const groupChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !pinnedValues.includes(opt.value));
+                        if (groupChildren.length > 0) {
+                            if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '常规选项'; optionsContainer.appendChild(otherLabel); }
+                            const groupLabel = targetDoc().createElement('div'); groupLabel.textContent = child.label; optionsContainer.appendChild(groupLabel);
+                            groupChildren.forEach(opt => { const div = createOptionDiv(opt); if(div) optionsContainer.appendChild(div); });
+                        }
+                    } else if (child.tagName === 'OPTION' && !pinnedValues.includes(child.value)) {
+                        if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '常规选项'; optionsContainer.appendChild(otherLabel); }
+                        const div = createOptionDiv(child); if(div) optionsContainer.appendChild(div);
                     }
-                } else if (child.tagName === 'OPTION' && !child.selected && !pinnedValues.includes(child.value)) {
-                    if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
-                    const div = createOptionDiv(child);
-                    if(div) optionsContainer.appendChild(div);
-                }
-            });
+                });
+            }
         } else if (isWorldInfoSelect && isWorldInfoCachePopulated) {
             worldInfoCache.options.forEach(cachedOpt => {
                 const originalOption = Array.from(originalSelect.options).find(opt => opt.value === cachedOpt.value) || {};
@@ -632,7 +729,8 @@
             const _getChatWbName    = resolveApiFn('getChatWorldbookName');
 
             function getWorldbookPriority(option) {
-                if (option.selected) return 0;
+                // 【适配世界书选择的置顶开关逻辑】
+                if (isSortSelectedToTop && option.selected) return 0;
                 const text = option.textContent.trim();
                 try {
                     if (_getGlobalWbNames) {
@@ -697,15 +795,16 @@
             });
 
             const sorted = allOpts.sort((a, b) => {
-                const aRank = a === selectedOpt ? 0 : (pinnedValues.includes(a.value) ? 1 : 2);
-                const bRank = b === selectedOpt ? 0 : (pinnedValues.includes(b.value) ? 1 : 2);
+                // 【适配置顶开关逻辑】
+                const aRank = (isSortSelectedToTop && a === selectedOpt) ? 0 : (pinnedValues.includes(a.value) ? 1 : 2);
+                const bRank = (isSortSelectedToTop && b === selectedOpt) ? 0 : (pinnedValues.includes(b.value) ? 1 : 2);
                 return aRank - bRank;
             });
 
             const hasPinnedOpts = pinnedValues.length > 0 && allOpts.some(opt => pinnedValues.includes(opt.value));
             let lastRank = -1;
             sorted.forEach(opt => {
-                const rank = opt === selectedOpt ? 0 : (pinnedValues.includes(opt.value) ? 1 : 2);
+                const rank = (isSortSelectedToTop && opt === selectedOpt) ? 0 : (pinnedValues.includes(opt.value) ? 1 : 2);
                 if (rank === 1 && lastRank !== 1) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
@@ -828,7 +927,12 @@
         container.appendChild(optionsList);
         appendTarget.appendChild(container);
 
+        const openTime = Date.now(); // 记录面板打开的精确时间
         const scrollHandler = (event) => {
+            // 给予 200ms 的布局稳定宽限期
+            // 防止面板刚打开时，因 Select2 强行抢夺焦点造成的页面瞬间"幽灵滚动"触发误关
+            if (Date.now() - openTime < 200) return;
+
             if (optionsList.contains(event.target)) return;
             const activeEl = targetDoc().activeElement;
             if (activeEl && activeEl === searchInput) return;
@@ -850,9 +954,68 @@
             }
             const selectedItem = optionsContainer.querySelector('.selected');
             if (selectedItem) {
+                // 如果关了强制置顶，被选中的项就不一定在最上面了，这个时候脚本自动滚动视窗到他所在的位置
                 optionsList.scrollTop = selectedItem.offsetTop - (optionsList.clientHeight / 2);
             }
         }, 10);
+    }
+
+    // --- 弹窗说明函数 ---
+    function showWelcomePopup() {
+        // 如果本地存储有记录，说明已经弹过，直接返回
+        if (Storage.getMeta('welcomePopupShown', false)) return;
+
+        // 根据 isDarkMode 判断当前主题颜色
+        const bgStr = isDarkMode ? 'rgba(40, 40, 40, 0.95)' : '#ffffff';
+        const textStr = isDarkMode ? '#e0e0e0' : '#333333';
+        const borderStr = isDarkMode ? '1px solid rgba(80, 80, 80, 0.5)' : '1px solid #f0f0f0';
+        const titleColor = isDarkMode ? 'rgba(216, 168, 231, 0.95)' : '#1565c0';
+        const btnBg = isDarkMode ? 'rgba(216, 168, 231, 0.2)' : '#e3f2fd';
+        const btnHover = isDarkMode ? 'rgba(216, 168, 231, 0.4)' : '#bbdefb';
+        const codeBg = isDarkMode ? 'rgba(0, 0, 0, 0.3)' : '#f5f5f5';
+
+        // 创建遮罩层（使用 absolute 定位以兼容 iframe 环境）
+        const overlay = targetDoc().createElement('div');
+        overlay.style.cssText = `position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 2147483647; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(2px);`;
+
+        // 创建弹窗本体
+        const modal = targetDoc().createElement('div');
+        modal.style.cssText = `background: ${bgStr}; color: ${textStr}; border: ${borderStr}; padding: 24px; border-radius: 12px; max-width: 420px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.3); font-family: sans-serif; line-height: 1.6; animation: slideDown 0.3s ease-out;`;
+
+        modal.innerHTML = `
+            <div style="font-size: 16px; font-weight: bold; color: ${titleColor}; text-align: center; border-bottom: ${borderStr}; padding-bottom: 12px; margin-bottom: 16px;">
+                【酒馆助手脚本】下拉选项框美化（2026.4.19）
+            </div>
+            <div style="font-size: 14px; margin-bottom: 24px;">
+                <div style="margin-bottom: 12px;">
+                    <strong>切换主题</strong><br>
+                    在任意下拉搜索框输入 <code style="padding:2px 6px; border-radius:4px;">/切换主题</code> ，则可以快速切换至白天/黑夜主题。
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <strong>兼容预设过滤脚本</strong><br>
+                    在预设管理器的条目下拉搜索框中输入 <code style="padding:2px 6px; border-radius:4px;">/取消过滤</code> 命令即可。
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <strong>提供选中选项顶置功能</strong><br>
+                    在任意下拉搜索框中输入 <code style="padding:2px 6px; border-radius:4px;">/顶置</code> 命令即可。
+                </div>
+            </div>
+            <div style="text-align: center;">
+                <button id="gr-welcome-btn" style="background: ${btnBg}; color: ${titleColor}; border: none; padding: 10px 32px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.2s; font-size: 14px;">我知道了</button>
+            </div>
+        `;
+
+        // 按钮交互与关闭逻辑
+        const btn = modal.querySelector('#gr-welcome-btn');
+        btn.onmouseover = () => btn.style.background = btnHover;
+        btn.onmouseout = () => btn.style.background = btnBg;
+        btn.onclick = () => {
+            Storage.setMeta('welcomePopupShown', true); // 记录为已查看
+            overlay.remove();
+        };
+
+        overlay.appendChild(modal);
+        targetDoc().body.appendChild(overlay);
     }
 
 	function checkExemptionRules(originalSelect, forceReplace) {
@@ -864,6 +1027,9 @@
         // 允许所有多选框弹出美化的下拉列表
         if (isMultiSelect) return true;
 
+        // 【显式为 world_editor_select 放开白名单拦截限制，修复其在移动/平板端无法弹出的问题】
+        if (originalSelect.id === 'world_editor_select') return true;
+
         if (isSelect2 && !originalSelect.closest('#WIMultiSelector')) {
             return false;
         }
@@ -873,15 +1039,34 @@
     function handleSelectTrigger(e, forceReplace = false) {
         let targetSelect = e.target.closest('select:not([multiple])') || e.target.closest('select[multiple]');
 
+        // 【增强 Select2 容器向原生 SELECT 标签的溯源寻找能力（适配移动和平板生成的非标准 Select2 ID）】
         if (!targetSelect && e.target.closest('.select2-container')) {
             if (e.target.closest('.select2-selection__choice__remove')) {
                 return false;
             }
             const select2Element = e.target.closest('.select2-container');
-            const select2Id = select2Element.getAttribute('data-select2-id') || select2Element.id?.replace('select2-', '');
+            
+            // 尝试途径 1：通过标准 data-select2-id 寻找
+            const select2Id = select2Element.getAttribute('data-select2-id');
             if (select2Id) {
-                targetSelect = targetDoc().querySelector(`select[data-select2-id="${select2Id}"]`) ||
-                               targetDoc().querySelector(`select#${select2Id}`);
+                targetSelect = targetDoc().querySelector(`select[data-select2-id="${select2Id}"]`);
+            }
+
+            // 尝试途径 2：通过包裹容器内部的 aria-labelledby 反向推导真实 ID（针对平板的救命稻草）
+            if (!targetSelect) {
+                const renderedSpan = select2Element.querySelector('.select2-selection__rendered');
+                if (renderedSpan && renderedSpan.id) {
+                    const match = renderedSpan.id.match(/^select2-(.+)-container$/);
+                    if (match && match[1]) {
+                        targetSelect = targetDoc().getElementById(match[1]);
+                    }
+                }
+            }
+
+            // 尝试途径 3：老版本的兜底方案
+            if (!targetSelect) {
+                const fallbackId = select2Element.id?.replace('select2-', '');
+                if (fallbackId) targetSelect = targetDoc().getElementById(fallbackId);
             }
         }
 
@@ -927,6 +1112,9 @@
     function initialize() {
         console.log(`${SCRIPT_NAME} 正在初始化...`);
 
+        // --- 调用首次加载弹窗 ---
+        showWelcomePopup();
+
         const styleSheet = targetDoc().createElement("style");
         styleSheet.innerText = customStyles;
         targetDoc().head.appendChild(styleSheet);
@@ -954,7 +1142,6 @@
             if (e.touches && e.touches.length > 0) {
                 const moveX = Math.abs(e.touches[0].clientX - globalTouchStartX);
                 const moveY = Math.abs(e.touches[0].clientY - globalTouchStartY);
-                // 容差值设为 10 像素。如果手指移动超过 10 像素，则判定为滑动屏幕
                 if (moveX > 10 || moveY > 10) {
                     isGlobalTouchScrolling = true;
                 }
@@ -962,12 +1149,10 @@
         }, { passive: true, capture: true });
 
         targetDoc().addEventListener('touchend', (e) => {
-            // 只有当手指没有发生明显滑动时（即真正的点击），才触发下拉框
             if (!isGlobalTouchScrolling) {
                 handleSelectTrigger(e);
             }
         }, { passive: false, capture: true });
-        // --- 修复结束 ---
 
         targetDoc().addEventListener('keydown', (e) => {
             if (e.key === ' ' || e.key === 'Enter') {
@@ -981,7 +1166,13 @@
         });
 
         targetDoc().addEventListener('click', (e) => {
-            if (!e.target.closest('.gr-container-enhanced') && !e.target.closest('.gr-select2-display') && e.target.tagName !== 'SELECT' && e.target.tagName !== 'OPTION') {
+            if (
+                !e.target.closest('.gr-container-enhanced') &&
+                !e.target.closest('.gr-select2-display') &&
+                !e.target.closest('.select2-container') &&
+                e.target.tagName !== 'SELECT' &&
+                e.target.tagName !== 'OPTION'
+            ) {
                 closeDropdown();
             }
         });
