@@ -120,9 +120,164 @@
     let isSortSelectedToTop = Storage.getSetting('sortSelectedToTop', false); // 默认关闭
 
     // 顶置功能
-    function getPinnedValues(selectEl) { return Storage.getPinned(selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown')); }
-    function togglePinnedValue(selectEl, value) { const key = selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown'); const p = getPinnedValues(selectEl); const i = p.indexOf(value); if (i >= 0) p.splice(i, 1); else p.push(value); Storage.setPinned(key, p); return p; }
+    // 【修复2】固定项身份：优先用选项文本（稳定），文本在同一 select 内不唯一时回退 value+文本；
+    // 兼容旧版本存下的"纯 value / 纯文本"记录（下次写入时自动升级为新格式）。
+    const dupTextCache = new WeakMap();
+    function optionKey(selectEl, opt) {
+        if (!opt) return '';
+        const text = String(opt.textContent || '').trim();
+        let cache = dupTextCache.get(selectEl);
+        if (!cache || cache.size !== selectEl.options.length) {
+            const counts = new Map();
+            Array.from(selectEl.options).forEach(o => {
+                const t = String(o.textContent || '').trim();
+                counts.set(t, (counts.get(t) || 0) + 1);
+            });
+            const dup = new Set();
+            counts.forEach((c, t) => { if (c > 1) dup.add(t); });
+            cache = { size: selectEl.options.length, dup };
+            dupTextCache.set(selectEl, cache);
+        }
+        return cache.dup.has(text) ? `v\u0000${opt.value}\u0000${text}` : `t\u0000${text}`;
+    }
+    function isLegacyPinnedKey(k) { return typeof k !== 'string' || (!k.startsWith('t\u0000') && !k.startsWith('v\u0000')); }
+    // 顶置记录的存储键
+    function pinStorageKey(selectEl) {
+        return selectEl.id || (selectEl.closest('#WIMultiSelector') ? 'wi-multi' : 'unknown');
+    }
+    function getPinnedValues(selectEl) { return Storage.getPinned(pinStorageKey(selectEl)); }
+    function pinnedKeyList(selectEl) {
+        return getPinnedValues(selectEl).map(item => {
+            if (!isLegacyPinnedKey(item)) return item;
+            const opts = Array.from(selectEl.options);
+            const byText = opts.filter(o => String(o.textContent || '').trim() === item);
+            if (byText.length === 1) return optionKey(selectEl, byText[0]);
+            const byValue = opts.filter(o => o.value === item);
+            if (byValue.length === 1) return optionKey(selectEl, byValue[0]);
+            return String(item);
+        });
+    }
+    function isPinnedOption(selectEl, pinnedKeys, opt) {
+        if (!opt || !pinnedKeys || pinnedKeys.length === 0) return false;
+        if (pinnedKeys.includes(optionKey(selectEl, opt))) return true;
+        // 旧记录兜底（纯 value / 纯文本）
+        return pinnedKeys.includes(opt.value) || pinnedKeys.includes(String(opt.textContent || '').trim());
+    }
+    function togglePinnedValue(selectEl, opt) {
+        const key = pinStorageKey(selectEl);
+        const p = getPinnedValues(selectEl);
+        const text = String(opt.textContent || '').trim();
+        const k = optionKey(selectEl, opt);
+        const i = p.findIndex(v => v === k || (isLegacyPinnedKey(v) && (v === opt.value || v === text)));
+        if (i >= 0) p.splice(i, 1); else p.push(k);
+        Storage.setPinned(key, p);
+        return p;
+    }
     function isPinEnabled(selectEl) { if (!selectEl) return false; if (selectEl.id === 'themes') return true; if (selectEl.id === 'settings_preset_openai') return true; if (selectEl.closest('#WIMultiSelector .range-block-range')) return true; return false; }
+
+    // --- 4.5 顶置记录的「改名跟随」 ---
+    // 固定项的身份是选项文本，而预设/主题/世界书条目被重命名时改的正是文本，
+    // 不跟随的话固定记录会失效（实测 ST 预设改名 = 先追加新选项、约百毫秒后删除旧选项）。
+    // 这里监视选项增删：当"恰好一个固定键失效且能对应到刚被删除的选项"、
+    // 同时"恰好出现一个真正的新选项"时，把固定记录迁移到新键上。
+    // 单纯的新增/删除选项不触发迁移——失效的固定记录原样保留，选项重新出现时自动恢复固定。
+    const PIN_RENAME_TTL = 5000;     // 增删记录保留时长，需覆盖改名两步之间的间隔
+    const PIN_RENAME_DEBOUNCE = 300; // 合并改名产生的多次 DOM 变动
+    const pinRenameTrackers = new WeakMap();
+    const pinRenameDisposers = [];
+
+    // 选项的“身份键”：文本在同一 select 内唯一，整体重建时 value 会按位置重新分配，
+    // 所以判断“是否只是重建出来的老选项”只能用身份键，不能带纯 value（会撞车）。
+    function pinIdentityKeys(opt) {
+        const text = String(opt.textContent || '').trim();
+        if (!text) return [];
+        return [`t\u0000${text}`, `v\u0000${String(opt.value ?? '')}\u0000${text}`];
+    }
+
+    // 一个选项可能对应的全部固定键写法（含旧版存下的纯文本 / 纯 value 记录）
+    function pinKeyCandidates(opt) {
+        const legacy = [String(opt.textContent || '').trim(), String(opt.value ?? '')].filter(k => k !== '');
+        return pinIdentityKeys(opt).concat(legacy);
+    }
+
+    function collectOptionNodes(nodes) {
+        const out = [];
+        nodes.forEach(node => {
+            if (!node || node.nodeType !== 1) return;
+            const tag = String(node.tagName).toUpperCase();
+            if (tag === 'OPTION') out.push(node);
+            else if (tag === 'OPTGROUP') node.querySelectorAll('option').forEach(o => out.push(o));
+        });
+        return out;
+    }
+
+    function ensurePinRenameTracker(selectEl) {
+        if (!selectEl || pinRenameTrackers.has(selectEl)) return;
+        const tracker = { added: [], removed: [], timer: 0 };
+        const observer = new MutationObserver(mutations => {
+            const now = Date.now();
+            for (const m of mutations) {
+                collectOptionNodes(m.removedNodes).forEach(node => tracker.removed.push({ node, at: now }));
+                collectOptionNodes(m.addedNodes).forEach(node => tracker.added.push({ node, at: now }));
+            }
+            if (tracker.timer) clearTimeout(tracker.timer);
+            tracker.timer = setTimeout(() => reconcilePinRename(selectEl, tracker), PIN_RENAME_DEBOUNCE);
+        });
+        observer.observe(selectEl, { childList: true, subtree: true });
+        pinRenameTrackers.set(selectEl, tracker);
+        pinRenameDisposers.push(() => {
+            observer.disconnect();
+            if (tracker.timer) clearTimeout(tracker.timer);
+        });
+    }
+
+    function reconcilePinRename(selectEl, tracker) {
+        tracker.timer = 0;
+        const now = Date.now();
+        tracker.added = tracker.added.filter(r => now - r.at <= PIN_RENAME_TTL && selectEl.contains(r.node));
+        tracker.removed = tracker.removed.filter(r => now - r.at <= PIN_RENAME_TTL);
+        if (!tracker.added.length || !tracker.removed.length) return;
+
+        const pinned = getPinnedValues(selectEl);
+        if (!pinned.length) return;
+
+        // 现存选项 / 刚被删除选项各自能对应的键
+        const currentKeys = new Set();
+        Array.from(selectEl.options).forEach(opt => pinKeyCandidates(opt).forEach(k => currentKeys.add(k)));
+        const removedKeys = new Set();
+        tracker.removed.forEach(r => pinKeyCandidates(r.node).forEach(k => removedKeys.add(k)));
+
+        // 真正的新选项：整体重建时所有选项都会重新添加一遍，要把“重新创建的老选项”排除掉
+        // （按身份键比对——纯 value 在重建后会按位置复用，不能用来判断）
+        const removedIdentityKeys = new Set();
+        tracker.removed.forEach(r => pinIdentityKeys(r.node).forEach(k => removedIdentityKeys.add(k)));
+        const freshOptions = tracker.added.filter(r => !pinIdentityKeys(r.node).some(k => removedIdentityKeys.has(k)));
+        if (freshOptions.length !== 1) return;
+
+        // 失效、且能对应到"刚被删除的选项"的固定键（更早失效的记录不参与，避免误迁移）
+        const staleKeys = pinned.filter(k => !currentKeys.has(k) && removedKeys.has(k));
+        if (staleKeys.length !== 1) return;
+
+        const oldKey = staleKeys[0];
+        const newKey = optionKey(selectEl, freshOptions[0].node);
+        if (!newKey || newKey === oldKey) return;
+
+        const next = pinned.slice();
+        const idx = next.indexOf(oldKey);
+        if (idx < 0) return;
+        if (next.includes(newKey)) next.splice(idx, 1);   // 新键已被固定过：直接去掉失效的旧键
+        else next[idx] = newKey;
+        Storage.setPinned(pinStorageKey(selectEl), next);
+        console.log(`${SCRIPT_NAME} 固定项已跟随改名：${JSON.stringify(oldKey)} → ${JSON.stringify(newKey)}`);
+        tracker.added = [];
+        tracker.removed = [];
+    }
+
+    function scanPinRenameTrackers() {
+        targetDoc().querySelectorAll('#themes, #settings_preset_openai, #WIMultiSelector .range-block-range select').forEach(sel => {
+            if (isPinEnabled(sel)) ensurePinRenameTracker(sel);
+        });
+    }
 
     // --- 2. 注入样式 ---
     const customStyles = `
@@ -194,7 +349,17 @@
 
     // --- 3. 工具函数 ---
     const targetDoc = () => window.parent.document || document;
-    
+
+    // 【修复1】宿主（父）窗口：脚本运行在酒馆助手的 iframe 内，该 iframe 实测为 0×0，
+    // 所以 window.innerWidth/innerHeight/scrollX/scrollY 全部不可用，必须取父窗口的值。
+    const parentView = () => { try { return targetDoc().defaultView || window; } catch (e) { return window; } };
+    // 【修复1】宿主页面的 jQuery（select2 互操作要用父页实例）
+    const parentJQuery = () => { try { return parentView().jQuery || window.jQuery || null; } catch (e) { return null; } };
+
+    // 【修复2】是否让"带固定功能"的 select2 框（themes / 预设列表）也交给脚本接管。
+    // false = 保持旧行为（这些框继续由 select2 自己弹，看不到"已固定"分组）。
+    const ALLOW_SELECT2_FOR_PIN_SELECTS = true;
+
     function debounce(func, delay) {
         let timeoutId;
         return function(...args) {
@@ -202,9 +367,10 @@
             timeoutId = setTimeout(() => func.apply(this, args), delay);
         };
     }
-  
+
     function isMobile() {
-        return window.innerWidth <= 768;
+        // 【修复1】判断宿主视口宽度，而不是 0×0 的脚本 iframe（原来恒为 true）
+        return (parentView().innerWidth || 0) <= 768;
     }
 
 	function smartTriggerChange(selectEl) {
@@ -257,6 +423,9 @@
             const chip = targetDoc().createElement('span');
             chip.className = 'gr-select2-chip';
             chip.dataset.value = option.value;
+            // 【修复4】同时记录索引，避免同 value 的选项互相误标
+            const chipIndex = Array.prototype.indexOf.call(hiddenSelect.options, option);
+            if (chipIndex >= 0) chip.dataset.index = String(chipIndex);
 
             const textSpan = targetDoc().createElement('span');
             textSpan.textContent = option.textContent;
@@ -296,7 +465,11 @@
         if (!optionsContainer) return;
 
         optionsContainer.querySelectorAll('.gr-option').forEach(div => {
-            const opt = Array.from(hiddenSelect.options).find(o => o.value === div.dataset.value);
+            // 【修复4】优先按索引定位（value 可能重复）
+            const idx = Number(div.dataset.index);
+            const opt = (Number.isInteger(idx) && idx >= 0 && hiddenSelect.options[idx])
+                ? hiddenSelect.options[idx]
+                : Array.from(hiddenSelect.options).find(o => o.value === div.dataset.value);
             if (opt) div.classList.toggle('selected', opt.selected);
         });
     }
@@ -350,6 +523,9 @@
     // --- 4. 核心逻辑：动态创建并挂载选项列表 ---
      function openDropdown(originalSelect) {
         closeDropdown();
+
+        // 顶置记录的改名跟随：确保这个选择器处于监视中（打开过才可能产生固定记录）
+        if (isPinEnabled(originalSelect)) ensurePinRenameTracker(originalSelect);
 
         const isMultiSelectMode = originalSelect.hasAttribute('multiple');
         if (isMultiSelectMode) {
@@ -571,6 +747,7 @@
         }
 
         let validOptionCount = 0;
+        const realOptionByDiv = new WeakMap();   // 【修复4】备选 div → 真实 <option> 元素
         const createOptionDiv = (optionNode) => {
             if (optionNode.style && optionNode.style.display === 'none') return null;
             
@@ -585,18 +762,28 @@
             customOption.className = 'gr-option';
             customOption.textContent = optionNode.textContent;
             customOption.dataset.value = optionNode.value;
+
+            // 【修复4】识别"真 option"：跨文档不能用 instanceof，用 nodeType/tagName 判断
+            const isRealOption = !!(optionNode && optionNode.nodeType === 1 && String(optionNode.tagName).toUpperCase() === 'OPTION');
+            if (isRealOption) {
+                const realIndex = Array.prototype.indexOf.call(originalSelect.options, optionNode);
+                if (realIndex >= 0) {
+                    customOption.dataset.index = String(realIndex);
+                    realOptionByDiv.set(customOption, optionNode);
+                }
+            }
             
             if (optionNode.selected) customOption.classList.add('selected');
 
             if (isPinEnabled(originalSelect)) {
                 customOption.classList.add('has-pin');
-                const pinnedValues = getPinnedValues(originalSelect);
-                const isPinned = pinnedValues.includes(optionNode.value);
+                const pinnedKeys = pinnedKeyList(originalSelect);   // 【修复2】固定项身份 = 稳定键
+                const isPinned = isPinnedOption(originalSelect, pinnedKeys, optionNode);
                 const pinIcon = targetDoc().createElement('span');
                 pinIcon.className = 'gr-option-pin' + (isPinned ? ' pinned' : '');
                 pinIcon.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M14 4v5c0 1.12.37 2.16 1 3H9c.65-.86 1-1.9 1-3V4h4m3-2H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3V4h1c.55 0 1-.45 1-1s-.45-1-1-1z"/></svg>';
                 pinIcon.title = isPinned ? '取消固定' : '固定选项';
-                const handlePin = (e) => { e.preventDefault(); e.stopPropagation(); togglePinnedValue(originalSelect, optionNode.value); closeDropdown(); openDropdown(originalSelect); };
+                const handlePin = (e) => { e.preventDefault(); e.stopPropagation(); togglePinnedValue(originalSelect, optionNode); closeDropdown(); openDropdown(originalSelect); };
                 pinIcon.addEventListener('mousedown', handlePin);
                 pinIcon.addEventListener('touchend', (e) => { if (!isTouchScrolling) handlePin(e); });
                 customOption.appendChild(pinIcon);
@@ -605,16 +792,33 @@
             const handleSelect = (event) => {
                 if (!event.target.closest('.gr-option')) return;
 
+                // 【修复4】必须按 <option> 元素本身选中：value 可能重复
+                //（世界书条目 position 的三个 "@D 深度" 选项 value 都是 "4"，只按 value 永远只能命中第一个=系统⚙）
+                let targetOpt = realOptionByDiv.get(customOption) || null;
+                if (!targetOpt) {
+                    const idx = Number(customOption.dataset.index);
+                    if (Number.isInteger(idx) && idx >= 0 && originalSelect.options[idx]) targetOpt = originalSelect.options[idx];
+                }
+                if (!targetOpt) {
+                    // 兜底：世界书缓存等"伪 option"分支（那里 value 唯一）
+                    targetOpt = Array.from(originalSelect.options).find(opt => opt.value === customOption.dataset.value) || null;
+                }
+
                 if (isMultiSelectMode) {
-                    const originalOption = Array.from(originalSelect.options).find(opt => opt.value === customOption.dataset.value);
-                    if (originalOption) {
-                        originalOption.selected = !originalOption.selected;
+                    if (targetOpt) {
+                        targetOpt.selected = !targetOpt.selected;
                         customOption.classList.toggle('selected');
                         smartTriggerChange(originalSelect);
                     }
                 } else {
-                    originalSelect.value = customOption.dataset.value;
-                    smartTriggerChange(originalSelect);
+                    if (targetOpt) {
+                        // 单选：把该 option 置为 selected 会自动取消其它项，天然区分同 value 的选项
+                        targetOpt.selected = true;
+                        smartTriggerChange(originalSelect);
+                    } else {
+                        originalSelect.value = customOption.dataset.value;
+                        smartTriggerChange(originalSelect);
+                    }
                     closeDropdown();
                 }
             };
@@ -628,7 +832,7 @@
 
         if (isMultiSelectMode) {
             const allOptions = Array.from(originalSelect.options);
-            const pinnedValues = isPinEnabled(originalSelect) ? getPinnedValues(originalSelect) : [];
+            const pinnedValues = isPinEnabled(originalSelect) ? pinnedKeyList(originalSelect) : [];   // 【修复2】稳定键
 
             // 【适配置顶开关逻辑】
             if (isSortSelectedToTop) {
@@ -639,7 +843,7 @@
                 });
 
                 if (pinnedValues.length > 0) {
-                    const pinnedUnselected = allOptions.filter(opt => !opt.selected && pinnedValues.includes(opt.value));
+                    const pinnedUnselected = allOptions.filter(opt => !opt.selected && isPinnedOption(originalSelect, pinnedValues, opt));
                     if (pinnedUnselected.length > 0) {
                         const pinnedLabel = targetDoc().createElement('div');
                         pinnedLabel.className = 'gr-group-label';
@@ -652,11 +856,11 @@
                     }
                 }
 
-                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && pinnedValues.includes(opt.value));
+                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => !opt.selected && isPinnedOption(originalSelect, pinnedValues, opt));
                 let hasOther = false;
                 Array.from(originalSelect.children).forEach(child => {
                     if (child.tagName === 'OPTGROUP') {
-                        const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected && !pinnedValues.includes(opt.value));
+                        const unselectedChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !opt.selected && !isPinnedOption(originalSelect, pinnedValues, opt));
                         if (unselectedChildren.length > 0) {
                             if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
                             const groupLabel = targetDoc().createElement('div');
@@ -667,7 +871,7 @@
                                 if(div) optionsContainer.appendChild(div);
                             });
                         }
-                    } else if (child.tagName === 'OPTION' && !child.selected && !pinnedValues.includes(child.value)) {
+                    } else if (child.tagName === 'OPTION' && !child.selected && !isPinnedOption(originalSelect, pinnedValues, child)) {
                         if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '其他'; optionsContainer.appendChild(otherLabel); }
                         const div = createOptionDiv(child);
                         if(div) optionsContainer.appendChild(div);
@@ -675,7 +879,7 @@
                 });
             } else {
                 // 如果关闭了强制置顶，则按原样排序输出（保持 Pinned 优先权体验）
-                const pinnedUnselected = allOptions.filter(opt => pinnedValues.includes(opt.value));
+                const pinnedUnselected = allOptions.filter(opt => isPinnedOption(originalSelect, pinnedValues, opt));
                 if (pinnedValues.length > 0 && pinnedUnselected.length > 0) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
@@ -686,17 +890,17 @@
                         if(div) optionsContainer.appendChild(div);
                     });
                 }
-                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => pinnedValues.includes(opt.value));
+                const hasPinnedItems = pinnedValues.length > 0 && allOptions.some(opt => isPinnedOption(originalSelect, pinnedValues, opt));
                 let hasOther = false;
                 Array.from(originalSelect.children).forEach(child => {
                     if (child.tagName === 'OPTGROUP') {
-                        const groupChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !pinnedValues.includes(opt.value));
+                        const groupChildren = Array.from(child.children).filter(opt => opt.tagName === 'OPTION' && !isPinnedOption(originalSelect, pinnedValues, opt));
                         if (groupChildren.length > 0) {
                             if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '常规选项'; optionsContainer.appendChild(otherLabel); }
                             const groupLabel = targetDoc().createElement('div'); groupLabel.textContent = child.label; optionsContainer.appendChild(groupLabel);
                             groupChildren.forEach(opt => { const div = createOptionDiv(opt); if(div) optionsContainer.appendChild(div); });
                         }
-                    } else if (child.tagName === 'OPTION' && !pinnedValues.includes(child.value)) {
+                    } else if (child.tagName === 'OPTION' && !isPinnedOption(originalSelect, pinnedValues, child)) {
                         if (!hasOther && hasPinnedItems) { hasOther = true; const otherLabel = targetDoc().createElement('div'); otherLabel.className = 'gr-group-label'; otherLabel.textContent = '常规选项'; optionsContainer.appendChild(otherLabel); }
                         const div = createOptionDiv(child); if(div) optionsContainer.appendChild(div);
                     }
@@ -780,7 +984,7 @@
                 if (div) optionsContainer.appendChild(div);
             });
         } else if (isPinEnabled(originalSelect)) {
-            const pinnedValues = getPinnedValues(originalSelect);
+            const pinnedValues = pinnedKeyList(originalSelect);   // 【修复2】固定项身份 = 稳定键
             const selectedOpt = originalSelect.selectedOptions[0];
             const allOpts = [];
 
@@ -796,15 +1000,15 @@
 
             const sorted = allOpts.sort((a, b) => {
                 // 【适配置顶开关逻辑】
-                const aRank = (isSortSelectedToTop && a === selectedOpt) ? 0 : (pinnedValues.includes(a.value) ? 1 : 2);
-                const bRank = (isSortSelectedToTop && b === selectedOpt) ? 0 : (pinnedValues.includes(b.value) ? 1 : 2);
+                const aRank = (isSortSelectedToTop && a === selectedOpt) ? 0 : (isPinnedOption(originalSelect, pinnedValues, a) ? 1 : 2);
+                const bRank = (isSortSelectedToTop && b === selectedOpt) ? 0 : (isPinnedOption(originalSelect, pinnedValues, b) ? 1 : 2);
                 return aRank - bRank;
             });
 
-            const hasPinnedOpts = pinnedValues.length > 0 && allOpts.some(opt => pinnedValues.includes(opt.value));
+            const hasPinnedOpts = pinnedValues.length > 0 && allOpts.some(opt => isPinnedOption(originalSelect, pinnedValues, opt));
             let lastRank = -1;
             sorted.forEach(opt => {
-                const rank = (isSortSelectedToTop && opt === selectedOpt) ? 0 : (pinnedValues.includes(opt.value) ? 1 : 2);
+                const rank = (isSortSelectedToTop && opt === selectedOpt) ? 0 : (isPinnedOption(originalSelect, pinnedValues, opt) ? 1 : 2);
                 if (rank === 1 && lastRank !== 1) {
                     const pinnedLabel = targetDoc().createElement('div');
                     pinnedLabel.className = 'gr-group-label';
@@ -860,8 +1064,9 @@
         }
         
         const rect = positionSource.getBoundingClientRect();
-        let finalWidth = rect.width; 
-        
+        const pv = parentView();   // 【修复1】宿主窗口：视口尺寸与滚动量都必须取自它
+        let finalWidth = rect.width;
+
         if (originalSelect.id === 'qr--set' && isMobile()) {
             const targetEditor = targetDoc().querySelector("#qr--editor");
             if (targetEditor) finalWidth = targetEditor.getBoundingClientRect().right - rect.left;
@@ -869,7 +1074,11 @@
             const targetWidthId = WIDTH_TARGETS[originalSelect.id];
             if (targetWidthId) {
                 const targetElement = targetDoc().getElementById(targetWidthId);
-                if (targetElement) finalWidth = targetElement.getBoundingClientRect().right - rect.left;
+                if (targetElement) {
+                    // 【修复1】延伸宽度不得越出宿主视口（移动端原来会拉到比屏幕还宽，看着像"斜着飘出来"）
+                    const right = Math.min(targetElement.getBoundingClientRect().right, (pv.innerWidth || 0) - 8);
+                    if (right - rect.left > finalWidth) finalWidth = right - rect.left;
+                }
             }
         }
 
@@ -879,15 +1088,16 @@
         const TOP_BOUNDARY_ID = 'top-settings-holder';
         const BOTTOM_BOUNDARY_ID = 'send_form';
         const BOUNDARY_MARGIN = 10;
-        const originalSelectRect = positionSource.getBoundingClientRect(); 
+        const originalSelectRect = positionSource.getBoundingClientRect();
         const topBoundaryEl = targetDoc().getElementById(TOP_BOUNDARY_ID);
         const bottomBoundaryEl = targetDoc().getElementById(BOTTOM_BOUNDARY_ID);
         let maxAvailableHeight;
-        
-        const spaceBelow = window.innerHeight - originalSelectRect.bottom;
-        const estimatedMaxHeight = 350; 
+
+        // 【修复1】展开方向/可用高度用宿主视口高度（原来是脚本 iframe 的 innerHeight，恒为 0）
+        const spaceBelow = (pv.innerHeight || 0) - originalSelectRect.bottom;
+        const estimatedMaxHeight = 350;
         const isDropUp = (spaceBelow < estimatedMaxHeight && originalSelectRect.top > estimatedMaxHeight);
-        
+
         if (isDropUp) {
             container.classList.add('drop-up');
             optionsList.appendChild(optionsContainer);
@@ -905,7 +1115,7 @@
                 const bottomBoundaryRect = bottomBoundaryEl.getBoundingClientRect();
                 maxAvailableHeight = bottomBoundaryRect.top - originalSelectRect.bottom - BOUNDARY_MARGIN;
             } else {
-                maxAvailableHeight = window.innerHeight - originalSelectRect.bottom - BOUNDARY_MARGIN;
+                maxAvailableHeight = (pv.innerHeight || 0) - originalSelectRect.bottom - BOUNDARY_MARGIN;
             }
         }
         optionsList.style.maxHeight = `${Math.max(100, maxAvailableHeight)}px`;
@@ -913,40 +1123,49 @@
 
         const parentDialog = originalSelect.closest('dialog');
         const appendTarget = parentDialog || targetDoc().body;
-        
+
         if (parentDialog) {
             const scrollContainer = parentDialog.querySelector('.popup-body') || parentDialog;
             const parentRect = parentDialog.getBoundingClientRect();
             container.style.top = `${rect.top - parentRect.top + scrollContainer.scrollTop}px`;
             container.style.left = `${rect.left - parentRect.left + scrollContainer.scrollLeft}px`;
         } else {
-            container.style.top = `${rect.top + window.scrollY}px`;
-            container.style.left = `${rect.left + window.scrollX}px`;
+            // 【修复1】换算成宿主文档坐标：原来用的 window.scrollY 是脚本 iframe 的（恒为 0），
+            // 宿主页面一滚动面板就整体偏移（实测偏移量正好等于宿主滚动量，移动端尤其明显）。
+            const docEl = targetDoc().documentElement || {};
+            const scrollX = (typeof pv.scrollX === 'number') ? pv.scrollX : (docEl.scrollLeft || 0);
+            const scrollY = (typeof pv.scrollY === 'number') ? pv.scrollY : (docEl.scrollTop || 0);
+            container.style.top = `${rect.top + scrollY}px`;
+            container.style.left = `${rect.left + scrollX}px`;
         }
 
         container.appendChild(optionsList);
         appendTarget.appendChild(container);
 
         const openTime = Date.now(); // 记录面板打开的精确时间
+        const anchorRect = positionSource.getBoundingClientRect(); // 【修复1/3】记住锚点位置
         const scrollHandler = (event) => {
-            // 给予 200ms 的布局稳定宽限期
-            // 防止面板刚打开时，因 Select2 强行抢夺焦点造成的页面瞬间"幽灵滚动"触发误关
-            if (Date.now() - openTime < 200) return;
-
+            // 【修复3】布局稳定宽限期放宽到 400ms（原 200ms，移动端点击/地址栏/软键盘的滚动常晚于它）
+            if (Date.now() - openTime < 400) return;
             if (optionsList.contains(event.target)) return;
             const activeEl = targetDoc().activeElement;
-            if (activeEl && activeEl === searchInput) return;
+            // 【修复3】只要焦点在面板内（搜索框等）就一律不关（原来的逃生阀因 isMobile() 恒真而从未生效）
+            if (activeEl && (activeEl === searchInput || optionsList.contains(activeEl))) return;
+            // 【修复1/3】只有锚点真的移位（宿主 UI 确实被滚动）才关闭，避免布局抖动误关
+            const nowRect = positionSource.getBoundingClientRect();
+            if (Math.abs(nowRect.top - anchorRect.top) < 4 && Math.abs(nowRect.left - anchorRect.left) < 4) return;
             closeDropdown();
         };
-        
-        let parent = originalSelect.parentElement;
-        while (parent) {
-            activeScrollListeners.push({ element: parent, handler: scrollHandler });
-            parent.addEventListener('scroll', scrollHandler, true);
-            parent = parent.parentElement;
+
+        let scrollParent = originalSelect.parentElement;
+        while (scrollParent) {
+            activeScrollListeners.push({ element: scrollParent, handler: scrollHandler });
+            scrollParent.addEventListener('scroll', scrollHandler, true);
+            scrollParent = scrollParent.parentElement;
         }
-        activeScrollListeners.push({ element: window, handler: scrollHandler });
-        window.addEventListener('scroll', scrollHandler, true);
+        // 【修复1】宿主页面的滚动只能通过父窗口监听（脚本 iframe 的 window 收不到父页的滚动事件）
+        activeScrollListeners.push({ element: pv, handler: scrollHandler });
+        pv.addEventListener('scroll', scrollHandler, true);
 
         setTimeout(() => {
             if (!isMobile() && (validOptionCount >= 10 || isPresetManagerSelect)) {
@@ -1032,7 +1251,11 @@
         // 【显式为 world_editor_select 放开白名单拦截限制，修复其在移动/平板端无法弹出的问题】
         if (originalSelect.id === 'world_editor_select') return true;
 
+        // 【修复2】被 select2 接管、但脚本自己带"固定"功能的框（themes / 预设列表）仍然交还脚本接管，
+        // 否则这两个框里根本看不到"已固定"分组（实测 preset-transfer 会给预设框加 select2）。
+        // 想完全恢复旧行为（一律放行 select2）把 ALLOW_SELECT2_FOR_PIN_SELECTS 改成 false。
         if (isSelect2 && !originalSelect.closest('#WIMultiSelector')) {
+            if (ALLOW_SELECT2_FOR_PIN_SELECTS && isPinEnabled(originalSelect)) return true;
             return false;
         }
         return true;
@@ -1098,8 +1321,10 @@
         e.preventDefault();
         e.stopPropagation();
 
-        if (window.jQuery && window.jQuery(targetSelect).data('select2')) {
-            setTimeout(() => window.jQuery(targetSelect).select2('close'), 0);
+        // 【修复1】select2 互操作要用宿主页面的 jQuery 实例（脚本 iframe 里未必有 jQuery）
+        const $parent = parentJQuery();
+        if ($parent && $parent(targetSelect).data && $parent(targetSelect).data('select2')) {
+            setTimeout(() => { try { $parent(targetSelect).select2('close'); } catch (e) { } }, 0);
         }
 
         const isOpen = targetDoc().getElementById(CONTAINER_ID) !== null;
@@ -1111,19 +1336,63 @@
         return true;
     }
 
+    // 【修复3】实例登记：酒馆助手会重建脚本 iframe（脚本被重跑），而注册在父页面上的监听
+    // 不会随 iframe 消失，于是每重跑一次就多一套监听（一次点击被 toggle 两次 → 面板刚开就关）。
+    // 这里保证同一时间只有一套监听生效，重跑时先注销旧实例。
+    const INSTANCE_FLAG = '__grDropdownBeautifyInstance';
+    let disposers = [];
+    function onListener(target, type, fn, opts) {
+        if (!target || typeof target.addEventListener !== 'function') return;
+        target.addEventListener(type, fn, opts);
+        disposers.push(() => target.removeEventListener(type, fn, opts));
+    }
+
     function initialize() {
+        const parentWin = window.parent || window;
+        if (typeof parentWin[INSTANCE_FLAG] === 'function') {
+            try { parentWin[INSTANCE_FLAG](); } catch (e) { console.warn(`${SCRIPT_NAME} 旧实例清理失败:`, e); }
+        }
+        disposers = [];
+        let styleSheet = null;
+
         console.log(`${SCRIPT_NAME} 正在初始化...`);
 
         // --- 调用首次加载弹窗 ---
         showWelcomePopup();
 
-        const styleSheet = targetDoc().createElement("style");
+        // 【修复3】样式只注入一次（原来每次重跑都追加一份）
+        targetDoc().querySelectorAll('style[data-gr-dropdown-style]').forEach(el => el.remove());
+        styleSheet = targetDoc().createElement("style");
+        styleSheet.setAttribute('data-gr-dropdown-style', '1');
         styleSheet.innerText = customStyles;
         targetDoc().head.appendChild(styleSheet);
         if (isDarkMode) targetDoc().body.classList.add('dark-mode');
 
-        targetDoc().addEventListener('mousedown', (e) => {
+        // 下一次重跑时会调用它：注销监听、关闭面板、移除样式
+        parentWin[INSTANCE_FLAG] = () => {
+            disposers.forEach(fn => { try { fn(); } catch (e) { } });
+            disposers = [];
+            pinRenameDisposers.forEach(fn => { try { fn(); } catch (e) { } });
+            pinRenameDisposers.length = 0;
+            try { closeDropdown(); } catch (e) { }
+            try { if (entriesListObserver) { entriesListObserver.disconnect(); entriesListObserver = null; } } catch (e) { }
+            if (styleSheet && styleSheet.parentElement) styleSheet.remove();
+            targetDoc().querySelectorAll('style[data-gr-dropdown-style]').forEach(el => el.remove());
+            delete parentWin[INSTANCE_FLAG];
+            console.log(`${SCRIPT_NAME} 旧实例已清理。`);
+        };
+
+        // 【修复3】只把"触摸 → 兼容鼠标事件"这一对去抖掉：移动端一次点击先来 touchend，
+        // 浏览器随后又补发 mousedown，两个入口各 toggle 一次 → 面板刚打开就被自己关掉
+        //（实测：连投两次 mousedown 即"开+关"）。不吞正常鼠标点击，也不吞"点击别处后再点选择框"。
+        let lastTouchGestureAt = 0;
+        let lastMouseGestureAt = 0;
+        const TOUCH_MOUSE_DEDUPE_MS = 700;
+
+        onListener(targetDoc(), 'mousedown', (e) => {
             if (e.button !== 0) return;
+            if (Date.now() - lastTouchGestureAt < TOUCH_MOUSE_DEDUPE_MS) return; // 这次点击已由 touchend 处理
+            lastMouseGestureAt = Date.now();
             handleSelectTrigger(e);
         }, true);
 
@@ -1132,7 +1401,7 @@
         let globalTouchStartY = 0;
         let isGlobalTouchScrolling = false;
 
-        targetDoc().addEventListener('touchstart', (e) => {
+        onListener(targetDoc(), 'touchstart', (e) => {
             if (e.touches && e.touches.length > 0) {
                 globalTouchStartX = e.touches[0].clientX;
                 globalTouchStartY = e.touches[0].clientY;
@@ -1140,7 +1409,7 @@
             isGlobalTouchScrolling = false; // 初始假设不是滑动
         }, { passive: true, capture: true });
 
-        targetDoc().addEventListener('touchmove', (e) => {
+        onListener(targetDoc(), 'touchmove', (e) => {
             if (e.touches && e.touches.length > 0) {
                 const moveX = Math.abs(e.touches[0].clientX - globalTouchStartX);
                 const moveY = Math.abs(e.touches[0].clientY - globalTouchStartY);
@@ -1150,24 +1419,25 @@
             }
         }, { passive: true, capture: true });
 
-        targetDoc().addEventListener('touchend', (e) => {
-            if (!isGlobalTouchScrolling) {
-                handleSelectTrigger(e);
-            }
+        onListener(targetDoc(), 'touchend', (e) => {
+            if (isGlobalTouchScrolling) return;
+            if (Date.now() - lastMouseGestureAt < 300) return; // 鼠标路径刚处理过这次点击，不重复
+            lastTouchGestureAt = Date.now();
+            handleSelectTrigger(e);
         }, { passive: false, capture: true });
 
-        targetDoc().addEventListener('keydown', (e) => {
+        onListener(targetDoc(), 'keydown', (e) => {
             if (e.key === ' ' || e.key === 'Enter') {
                 const select = targetDoc().activeElement;
                 if (select && select.tagName === 'SELECT') {
-                    if (handleSelectTrigger({ target: select, preventDefault: ()=>e.preventDefault(), stopPropagation: ()=>e.stopPropagation() })) {
+                    if (handleSelectTrigger({ target: select, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() })) {
                         e.preventDefault();
                     }
                 }
             }
         });
 
-        targetDoc().addEventListener('click', (e) => {
+        onListener(targetDoc(), 'click', (e) => {
             if (
                 !e.target.closest('.gr-container-enhanced') &&
                 !e.target.closest('.gr-select2-display') &&
@@ -1179,9 +1449,11 @@
             }
         });
 
-        window.addEventListener('resize', () => {
+        // 【修复1/3】resize 必须监听宿主窗口（父页面）：脚本 iframe 是 0×0，监听它永远不会触发，
+        // 而父页尺寸变化（移动端地址栏收起/软键盘）才是真正需要响应的事件。
+        onListener(parentView(), 'resize', () => {
             const activeEl = targetDoc().activeElement;
-            if (activeEl && activeEl.matches('.gr-container-enhanced.open .gr-search-input')) return;
+            if (activeEl && activeEl.closest('.gr-container-enhanced')) return;
             closeDropdown();
         });
 
@@ -1235,8 +1507,11 @@
                 if (sel.parentElement && sel.parentElement.querySelector(':scope > .gr-select2-display')) return;
                 replaceSelect2Display(sel);
             });
+            // 世界书等多选抽屉是后出现的，顺手把它们也纳入改名跟随
+            scanPinRenameTrackers();
         }
         scanAndReplaceSelect2Displays();
+        scanPinRenameTrackers();
 
         const select2DisplayObserver = new MutationObserver(debounce(() => {
             scanAndReplaceSelect2Displays();
