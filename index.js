@@ -345,6 +345,18 @@
         .gr-option.has-pin { padding-right: 26px !important; }
         .gr-filter-toggle { border: 1px dashed #42a5f5 !important; background-color: #f8fbff !important; text-align: center; }
         body.dark-mode .gr-filter-toggle { border: 1px dashed rgba(216, 168, 231, 0.6) !important; background-color: rgba(216, 168, 231, 0.1) !important; }
+        /* 【世界书多选框去重】这个位置最多会同时挤三个框：
+           1) 本脚本的 .gr-select2-display
+           2) ST-BaiBai-Tools（世界书列表优化）插入的 .bai-bai-wi-global-selector-display
+           3) ST 原生（桌面端）select2 的 span.select2-container
+           只要本脚本已接管（存在 .gr-select2-display）就强制隐藏另外两个。
+           用 :has() 做条件、!important 压过内联样式和 BaiBai 的样式表——
+           select2 容器可能在脚本运行后才被 ST 创建出来、BaiBai 关闭优化时也会把
+           select2 容器的内联 display 恢复为可见，静态内联隐藏挡不住这两种情况。 */
+        #WIMultiSelector .range-block-range:has(> .gr-select2-display) > span.select2-container { display: none !important; }
+        #WIMultiSelector .range-block-range:has(> .gr-select2-display) > select[multiple] { display: none !important; }
+        #WIMultiSelector .range-block-range:has(> .gr-select2-display) > .bai-bai-wi-global-selector { display: none !important; }
+        body:has(#WIMultiSelector .range-block-range > .gr-select2-display) .bai-bai-wi-global-selector-dropdown { display: none !important; }
     `;
 
     // --- 3. 工具函数 ---
@@ -474,6 +486,15 @@
         });
     }
 
+    // --- 3.6 隐藏与本脚本竞争"世界书全局多选框"的另外两个 UI ---
+    // ST 原生（桌面端）的 select2 容器、ST-BaiBai-Tools 的 bai-bai-wi-global-selector 显示框。
+    // CSS 规则（customStyles 末尾）是主保险，这里再做一层内联兜底，两者都指向同一位置。
+    function hideCompetingMultiSelectorUI(parentDiv) {
+        if (!parentDiv) return;
+        parentDiv.querySelectorAll(':scope > span.select2-container').forEach(el => { el.style.display = 'none'; });
+        parentDiv.querySelectorAll(':scope > .bai-bai-wi-global-selector').forEach(el => { el.style.display = 'none'; });
+    }
+
     function replaceSelect2Display(hiddenSelect) {
         if (replacedSelect2Displays.has(hiddenSelect)) return;
 
@@ -493,6 +514,8 @@
             hiddenSelect.style.display = 'none';
             parentDiv.insertBefore(displayEl, hiddenSelect.nextSibling);
         }
+        // BaiBai 扩展可能已经/稍后会在这里插入自己的显示框，一并隐藏
+        hideCompetingMultiSelectorUI(parentDiv);
 
         const state = { displayEl, select2Span: isSelect2 ? select2Span : null };
         replacedSelect2Displays.set(hiddenSelect, state);
@@ -1503,8 +1526,15 @@
         function scanAndReplaceSelect2Displays() {
             const targetMultiSelects = targetDoc().querySelectorAll('#WIMultiSelector .range-block-range select[multiple]');
             targetMultiSelects.forEach(sel => {
+                const parentDiv = sel.parentElement;
+                if (!parentDiv) return;
+                if (parentDiv.querySelector(':scope > .gr-select2-display')) {
+                    // 已接管也不能直接返回：ST 可能在脚本运行后才初始化 select2（新 span 没有内联
+                    // display:none）、BaiBai 扩展也可能在之后才插入/恢复自己的显示框，这里重新隐藏一遍
+                    hideCompetingMultiSelectorUI(parentDiv);
+                    return;
+                }
                 if (replacedSelect2Displays.has(sel)) return;
-                if (sel.parentElement && sel.parentElement.querySelector(':scope > .gr-select2-display')) return;
                 replaceSelect2Display(sel);
             });
             // 世界书等多选抽屉是后出现的，顺手把它们也纳入改名跟随
