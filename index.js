@@ -281,8 +281,15 @@
 
     // --- 2. 注入样式 ---
     const customStyles = `
-        .gr-container-enhanced { position: absolute; pointer-events: none; z-index: 2147483647; border: none !important; outline: none !important; }
-        .gr-options { display: none; pointer-events: auto !important; position: absolute; left: 0; width: 100%; background-color: #ffffff !important; border: 1px solid #f0f0f0 !important; border-radius: 12px !important; overflow-y: auto; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); z-index: 2147483647; scrollbar-width: none !important; -ms-overflow-style: none; }
+        /* 【移动端修复】容器不再使用 pointer-events:none：iOS/WebKit 的触摸滚动命中测试不完全
+           遵守子元素恢复的 pointer-events:auto，会导致 .gr-options 在手机上无法触摸滚动
+          （桌面端滚轮不受 pointer-events 影响，所以只有手机出问题）。
+           容器本体可命中后，点击/触摸容器空白区（原 select 所在区域）改由 JS 关闭面板。 */
+        .gr-container-enhanced { position: absolute; z-index: 2147483647; border: none !important; outline: none !important; }
+        /* 【移动端修复】overscroll-behavior:contain 阻止列表滚到头后滚动链穿透到背后的面板
+          （面板一动 → 锚点移位 → 面板被误关）；touch-action:pan-y 显式放行纵向触摸滚动；
+           -webkit-overflow-scrolling/-webkit-touch-callout 兼容旧 iOS 的惯性滚动与长按弹菜单 */
+        .gr-options { display: none; pointer-events: auto !important; position: absolute; left: 0; width: 100%; background-color: #ffffff !important; border: 1px solid #f0f0f0 !important; border-radius: 12px !important; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; -webkit-touch-callout: none; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); z-index: 2147483647; scrollbar-width: none !important; -ms-overflow-style: none; }
         body.dark-mode .gr-options { background-color: rgba(30, 30, 30, 1) !important; border: 1px solid rgba(60, 60, 60, 0.5) !important; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
         .gr-options::-webkit-scrollbar { display: none; }
         .gr-container-enhanced.open .gr-options { display: block; }
@@ -573,6 +580,19 @@
         let isTouchScrolling = false;
         optionsList.addEventListener('touchstart', () => { isTouchScrolling = false; }, { passive: true });
         optionsList.addEventListener('touchmove', () => { isTouchScrolling = true; }, { passive: true });
+
+        // 【移动端修复】容器不再 pointer-events:none 后，容器本体（覆盖在 select 上的区域）
+        // 会截获点击；这里把这类点击/触摸视为"再次点击选择框"，关闭面板，保持原有交互。
+        // 列表内部的事件已被上面的 stopPropagation 拦截，不会走到这里。
+        ['mousedown', 'touchend'].forEach(evt => {
+            container.addEventListener(evt, (e) => {
+                if (e.target.closest && e.target.closest('.gr-options')) return;
+                if (evt === 'mousedown' && e.button !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                closeDropdown();
+            });
+        });
 
         const searchBox = targetDoc().createElement('div');
         searchBox.className = 'gr-search-box';
@@ -1141,6 +1161,13 @@
                 maxAvailableHeight = (pv.innerHeight || 0) - originalSelectRect.bottom - BOUNDARY_MARGIN;
             }
         }
+        // 【移动端修复】列表高度在边界计算之外再夹紧到宿主可视区：
+        // 手机上是全屏弹窗（如织幕 ESG 面板）时，send_form 等边界元素被压在弹窗后面，
+        // 其位置不再可靠，列表可能越出屏幕下缘（移动端 body 不可滚动，越出部分永远够不到）
+        const viewportCap = isDropUp
+            ? originalSelectRect.top - BOUNDARY_MARGIN
+            : (pv.innerHeight || 0) - originalSelectRect.bottom - BOUNDARY_MARGIN;
+        maxAvailableHeight = Math.min(maxAvailableHeight, viewportCap);
         optionsList.style.maxHeight = `${Math.max(100, maxAvailableHeight)}px`;
         searchBox.style.display = validOptionCount >= 10 || isPresetManagerSelect ? 'block' : 'none';
 
